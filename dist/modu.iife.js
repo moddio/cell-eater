@@ -6842,14 +6842,29 @@ var Modu = (() => {
   }
 
   // src/plugins/physics2d/spatial-hash.ts
+  function getBodyRadius(body) {
+    if (body.shape.type === 0 /* Circle */) {
+      return toFloat(body.shape.radius);
+    } else {
+      const box = body.shape;
+      const hw = toFloat(box.halfWidth);
+      const hh = toFloat(box.halfHeight);
+      return Math.sqrt(hw * hw + hh * hh);
+    }
+  }
   var SpatialHash2D = class {
     /**
      * Create a spatial hash grid.
-     * @param cellSize Size of each cell (should be >= largest entity diameter)
+     * @param cellSize Size of each cell. Entities larger than this are
+     *                 handled specially (checked against all others).
      */
     constructor(cellSize = 64) {
       this.cells = /* @__PURE__ */ new Map();
       this.bodyToCell = /* @__PURE__ */ new Map();
+      // Oversized entities (diameter > cellSize) - checked against all others
+      this.oversized = [];
+      // All regular (non-oversized) bodies for oversized checks
+      this.allRegular = [];
       this.cellSize = cellSize;
       this.invCellSize = 1 / cellSize;
     }
@@ -6868,11 +6883,21 @@ var Modu = (() => {
     clear() {
       this.cells.clear();
       this.bodyToCell.clear();
+      this.oversized.length = 0;
+      this.allRegular.length = 0;
     }
     /**
      * Insert a body into the grid.
+     * Oversized bodies (diameter > cellSize) are tracked separately.
      */
     insert(body) {
+      const radius = getBodyRadius(body);
+      const diameter = radius * 2;
+      if (diameter > this.cellSize) {
+        this.oversized.push(body);
+        return;
+      }
+      this.allRegular.push(body);
       const x = toFloat(body.position.x);
       const y = toFloat(body.position.y);
       const key = this.hashPosition(x, y);
@@ -6997,6 +7022,18 @@ var Modu = (() => {
           }
         }
       }
+      const oversized = this.oversized;
+      const allRegular = this.allRegular;
+      for (let i = 0; i < oversized.length; i++) {
+        for (let j = i + 1; j < oversized.length; j++) {
+          callback(oversized[i], oversized[j]);
+        }
+      }
+      for (const big of oversized) {
+        for (const small of allRegular) {
+          callback(big, small);
+        }
+      }
     }
     /**
      * Get potential collision pairs as an array.
@@ -7020,7 +7057,8 @@ var Modu = (() => {
       return {
         cellCount: this.cells.size,
         maxPerCell,
-        avgPerCell: this.cells.size > 0 ? totalBodies / this.cells.size : 0
+        avgPerCell: this.cells.size > 0 ? totalBodies / this.cells.size : 0,
+        oversizedCount: this.oversized.length
       };
     }
   };

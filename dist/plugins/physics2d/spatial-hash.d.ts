@@ -4,7 +4,12 @@
  * Divides the world into fixed-size cells. Bodies are hashed to cells
  * based on their position. Collision queries only check nearby cells.
  *
- * Optimal for .io games with many uniform-sized entities (food, bullets).
+ * Handles oversized entities (larger than cell size) by checking them
+ * against all other entities - since there are typically few of these,
+ * the O(n) cost is acceptable.
+ *
+ * Optimal for .io games with many uniform-sized entities (food, bullets)
+ * plus a few large obstacles or grown players.
  */
 import { RigidBody2D } from './rigid-body';
 export declare class SpatialHash2D {
@@ -12,9 +17,12 @@ export declare class SpatialHash2D {
     private invCellSize;
     private cells;
     private bodyToCell;
+    private oversized;
+    private allRegular;
     /**
      * Create a spatial hash grid.
-     * @param cellSize Size of each cell (should be >= largest entity diameter)
+     * @param cellSize Size of each cell. Entities larger than this are
+     *                 handled specially (checked against all others).
      */
     constructor(cellSize?: number);
     /**
@@ -28,6 +36,7 @@ export declare class SpatialHash2D {
     clear(): void;
     /**
      * Insert a body into the grid.
+     * Oversized bodies (diameter > cellSize) are tracked separately.
      */
     insert(body: RigidBody2D): void;
     /**
@@ -65,5 +74,6 @@ export declare class SpatialHash2D {
         cellCount: number;
         maxPerCell: number;
         avgPerCell: number;
+        oversizedCount: number;
     };
 }

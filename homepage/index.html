@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Modu Engine - Local-First Multiplayer Game Engine</title>
+    <meta name="description" content="Build multiplayer games that work instantly. Deterministic simulation, automatic sync, one codebase for solo or 100 players.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="nav-container">
+            <a href="/" class="nav-logo">
+                <span class="logo-text">Modu</span>
+            </a>
+            <div class="nav-links">
+                <a href="https://docs.moduengine.com" class="nav-link">Docs</a>
+                <a href="https://github.com/moddio/modu-engine" class="nav-link github-link" target="_blank" rel="noopener">
+                    <svg height="20" width="20" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                    </svg>
+                    <span>Star</span>
+                </a>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="hero-container">
+            <h1 class="hero-title">
+                Build multiplayer games<br>
+                <span class="gradient-text">that just work.</span>
+            </h1>
+            <p class="hero-subtitle">
+                Local-first multiplayer engine with deterministic simulation.<br>
+                One codebase. Solo or 100 players. Zero sync code.
+            </p>
+            <div class="hero-buttons">
+                <a href="https://docs.moduengine.com/getting-started" class="btn btn-primary">Get Started</a>
+                <a href="https://docs.moduengine.com" class="btn btn-secondary">Read Docs</a>
+            </div>
+            <div class="hero-code">
+                <pre><code><span class="tag">&lt;canvas</span> <span class="attr">id</span>=<span class="string">"game"</span> <span class="attr">width</span>=<span class="string">"800"</span> <span class="attr">height</span>=<span class="string">"600"</span><span class="tag">&gt;&lt;/canvas&gt;</span>
+<span class="tag">&lt;script</span> <span class="attr">src</span>=<span class="string">"https://cdn.moduengine.com/modu.min.js"</span><span class="tag">&gt;&lt;/script&gt;</span>
+<span class="tag">&lt;script&gt;</span>
+<span class="keyword">const</span> canvas = document.getElementById(<span class="string">'game'</span>);
+<span class="keyword">const</span> game = createGame();
+game.addPlugin(Simple2DRenderer, canvas);
+
+game.defineEntity(<span class="string">'player'</span>)
+    .with(Transform2D)
+    .with(Sprite, { shape: SHAPE_CIRCLE, radius: <span class="number">20</span> })
+    .with(Player)
+    .register();
+
+<span class="keyword">const</span> input = game.addPlugin(InputPlugin, canvas);
+input.action(<span class="string">'move'</span>, { type: <span class="string">'vector'</span>, bindings: [<span class="string">'wasd'</span>] });
+
+game.addSystem(() => {
+    <span class="keyword">for</span> (<span class="keyword">const</span> p <span class="keyword">of</span> game.query(<span class="string">'player'</span>)) {
+        <span class="keyword">const</span> dir = game.world.getInput(p.get(Player).clientId)?.move;
+        <span class="keyword">if</span> (dir) p.setVelocity(dir.x * <span class="number">5</span>, dir.y * <span class="number">5</span>);
+    }
+});
+
+game.connect(<span class="string">'my-room'</span>, {
+    onConnect(id) {
+        game.spawn(<span class="string">'player'</span>, {
+            x: dRandom() * <span class="number">800</span>,
+            y: dRandom() * <span class="number">600</span>,
+            clientId: id
+        });
+    }
+});
+<span class="tag">&lt;/script&gt;</span></code></pre>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section class="features">
+        <div class="features-container">
+            <h2 class="section-title">Why Modu?</h2>
+
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"/>
+                            <polyline points="12,6 12,12 16,14"/>
+                        </svg>
+                    </div>
+                    <h3>Instant Play</h3>
+                    <p>Your game runs locally immediately. No "connecting..." screens. When you go online, you're already playing.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                            <circle cx="9" cy="7" r="4"/>
+                            <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                            <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                        </svg>
+                    </div>
+                    <h3>One Codebase</h3>
+                    <p>No separate single-player or multiplayer modes. The same code works for 1 player or 100.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="22,12 18,12 15,21 9,3 6,12 2,12"/>
+                        </svg>
+                    </div>
+                    <h3>Deterministic Sync</h3>
+                    <p>All clients run the same simulation. Same inputs = same state. No rubberbanding, no desync.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
+                            <line x1="8" y1="21" x2="16" y2="21"/>
+                            <line x1="12" y1="17" x2="12" y2="21"/>
+                        </svg>
+                    </div>
+                    <h3>No Server Logic</h3>
+                    <p>Server just relays inputs. No game code on the server. Deploy anywhere, scale infinitely.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polygon points="12,2 2,7 12,12 22,7"/>
+                            <polyline points="2,17 12,22 22,17"/>
+                            <polyline points="2,12 12,17 22,12"/>
+                        </svg>
+                    </div>
+                    <h3>ECS Architecture</h3>
+                    <p>Entity-Component-System design. Compose behaviors, query efficiently, think in data.</p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+                        </svg>
+                    </div>
+                    <h3>Built-in Debug Tools</h3>
+                    <p>Determinism guard warns about unsafe code. Debug UI shows sync status. Find bugs before players do.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- How it Works Section -->
+    <section class="how-it-works">
+        <div class="how-container">
+            <h2 class="section-title">How It Works</h2>
+
+            <div class="flow-diagram">
+                <div class="flow-step">
+                    <div class="flow-number">1</div>
+                    <div class="flow-content">
+                        <h4>Player presses a key</h4>
+                        <p>Input captured locally</p>
+                    </div>
+                </div>
+                <div class="flow-arrow">&rarr;</div>
+                <div class="flow-step">
+                    <div class="flow-number">2</div>
+                    <div class="flow-content">
+                        <h4>Input sent to server</h4>
+                        <p>Server assigns sequence number</p>
+                    </div>
+                </div>
+                <div class="flow-arrow">&rarr;</div>
+                <div class="flow-step">
+                    <div class="flow-number">3</div>
+                    <div class="flow-content">
+                        <h4>Broadcast to all clients</h4>
+                        <p>Everyone gets same inputs</p>
+                    </div>
+                </div>
+                <div class="flow-arrow">&rarr;</div>
+                <div class="flow-step">
+                    <div class="flow-number">4</div>
+                    <div class="flow-content">
+                        <h4>Same simulation runs</h4>
+                        <p>Identical state everywhere</p>
+                    </div>
+                </div>
+            </div>
+
+            <p class="how-note">
+                The server never runs game logic. It's just a message broker.<br>
+                Your game code runs on clients. Determinism ensures they agree.
+            </p>
+        </div>
+    </section>
+
+    <!-- Code Example Section -->
+    <section class="code-example">
+        <div class="code-container">
+            <h2 class="section-title">Simple API</h2>
+
+            <div class="code-tabs">
+                <div class="code-panel">
+                    <h4>Define Entities</h4>
+                    <pre><code>game.defineEntity(<span class="string">'bullet'</span>)
+    .with(Transform2D)
+    .with(Body2D, {
+        shapeType: SHAPE_CIRCLE,
+        radius: <span class="number">5</span>
+    })
+    .with(Sprite, {
+        shape: SHAPE_CIRCLE,
+        color: <span class="string">'#ff0'</span>
+    })
+    .register();</code></pre>
+                </div>
+
+                <div class="code-panel">
+                    <h4>Write Systems</h4>
+                    <pre><code>game.addSystem(() => {
+    <span class="keyword">for</span> (<span class="keyword">const</span> b <span class="keyword">of</span> game.query(<span class="string">'bullet'</span>)) {
+        <span class="comment">// Destroy bullets that go off screen</span>
+        <span class="keyword">if</span> (b.get(Transform2D).y > <span class="number">1000</span>) {
+            b.destroy();
+        }
+    }
+});</code></pre>
+                </div>
+
+                <div class="code-panel">
+                    <h4>Handle Collisions</h4>
+                    <pre><code>physics.onCollision(<span class="string">'bullet'</span>, <span class="string">'enemy'</span>,
+    (bullet, enemy) => {
+        enemy.destroy();
+        bullet.destroy();
+        game.spawn(<span class="string">'explosion'</span>, {
+            x: enemy.get(Transform2D).x,
+            y: enemy.get(Transform2D).y
+        });
+    }
+);</code></pre>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA Section -->
+    <section class="cta">
+        <div class="cta-container">
+            <h2>Ready to build?</h2>
+            <p>Get started in minutes with our quickstart guide.</p>
+            <div class="cta-buttons">
+                <a href="https://docs.moduengine.com/getting-started" class="btn btn-primary btn-large">Get Started</a>
+                <a href="https://github.com/moddio/modu-engine" class="btn btn-secondary btn-large" target="_blank" rel="noopener">View on GitHub</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="footer-container">
+            <div class="footer-links">
+                <a href="https://docs.moduengine.com">Documentation</a>
+                <a href="https://github.com/moddio/modu-engine">GitHub</a>
+                <a href="https://github.com/moddio/modu-engine/issues">Issues</a>
+            </div>
+            <p class="footer-copyright">
+                Built by <a href="https://github.com/moddio">Moddio</a>
+            </p>
+        </div>
+    </footer>
+</body>
+</html>

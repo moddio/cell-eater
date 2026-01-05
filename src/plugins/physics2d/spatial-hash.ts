@@ -4,11 +4,33 @@
  * Divides the world into fixed-size cells. Bodies are hashed to cells
  * based on their position. Collision queries only check nearby cells.
  *
- * Optimal for .io games with many uniform-sized entities (food, bullets).
+ * Handles oversized entities (larger than cell size) by checking them
+ * against all other entities - since there are typically few of these,
+ * the O(n) cost is acceptable.
+ *
+ * Optimal for .io games with many uniform-sized entities (food, bullets)
+ * plus a few large obstacles or grown players.
  */
 
 import { RigidBody2D } from './rigid-body';
 import { Fixed, toFloat } from '../../math/fixed';
+import { Shape2DType, CircleShape, BoxShape2D } from './shapes';
+
+// ============================================
+// Helper: Get body radius for size comparison
+// ============================================
+
+function getBodyRadius(body: RigidBody2D): number {
+    if (body.shape.type === Shape2DType.Circle) {
+        return toFloat((body.shape as CircleShape).radius);
+    } else {
+        const box = body.shape as BoxShape2D;
+        // Use diagonal half-length as radius
+        const hw = toFloat(box.halfWidth);
+        const hh = toFloat(box.halfHeight);
+        return Math.sqrt(hw * hw + hh * hh);
+    }
+}
 
 // ============================================
 // Spatial Hash Grid
@@ -20,9 +42,15 @@ export class SpatialHash2D {
     private cells: Map<number, RigidBody2D[]> = new Map();
     private bodyToCell: Map<RigidBody2D, number> = new Map();
 
+    // Oversized entities (diameter > cellSize) - checked against all others
+    private oversized: RigidBody2D[] = [];
+    // All regular (non-oversized) bodies for oversized checks
+    private allRegular: RigidBody2D[] = [];
+
     /**
      * Create a spatial hash grid.
-     * @param cellSize Size of each cell (should be >= largest entity diameter)
+     * @param cellSize Size of each cell. Entities larger than this are
+     *                 handled specially (checked against all others).
      */
     constructor(cellSize: number = 64) {
         this.cellSize = cellSize;
@@ -45,12 +73,27 @@ export class SpatialHash2D {
     clear(): void {
         this.cells.clear();
         this.bodyToCell.clear();
+        this.oversized.length = 0;
+        this.allRegular.length = 0;
     }
 
     /**
      * Insert a body into the grid.
+     * Oversized bodies (diameter > cellSize) are tracked separately.
      */
     insert(body: RigidBody2D): void {
+        const radius = getBodyRadius(body);
+        const diameter = radius * 2;
+
+        // Oversized entities are checked against everything
+        if (diameter > this.cellSize) {
+            this.oversized.push(body);
+            return;
+        }
+
+        // Regular entities go into spatial hash
+        this.allRegular.push(body);
+
         const x = toFloat(body.position.x);
         const y = toFloat(body.position.y);
         const key = this.hashPosition(x, y);
@@ -195,6 +238,25 @@ export class SpatialHash2D {
                 }
             }
         }
+
+        // Handle oversized entities - check against ALL other entities
+        // This is O(oversized * total) but there are typically very few oversized entities
+        const oversized = this.oversized;
+        const allRegular = this.allRegular;
+
+        // Oversized vs oversized
+        for (let i = 0; i < oversized.length; i++) {
+            for (let j = i + 1; j < oversized.length; j++) {
+                callback(oversized[i], oversized[j]);
+            }
+        }
+
+        // Oversized vs all regular entities
+        for (const big of oversized) {
+            for (const small of allRegular) {
+                callback(big, small);
+            }
+        }
     }
 
     /**
@@ -210,7 +272,7 @@ export class SpatialHash2D {
     /**
      * Get statistics for debugging.
      */
-    getStats(): { cellCount: number; maxPerCell: number; avgPerCell: number } {
+    getStats(): { cellCount: number; maxPerCell: number; avgPerCell: number; oversizedCount: number } {
         let maxPerCell = 0;
         let totalBodies = 0;
 
@@ -222,7 +284,8 @@ export class SpatialHash2D {
         return {
             cellCount: this.cells.size,
             maxPerCell,
-            avgPerCell: this.cells.size > 0 ? totalBodies / this.cells.size : 0
+            avgPerCell: this.cells.size > 0 ? totalBodies / this.cells.size : 0,
+            oversizedCount: this.oversized.length
         };
     }
 }

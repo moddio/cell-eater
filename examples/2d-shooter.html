@@ -17,192 +17,211 @@
 const canvas = document.getElementById('game');
 const WIDTH = canvas.width, HEIGHT = canvas.height;
 
-// Define game-specific components
+// Components - ALL game state must be in components
 const Health = defineComponent('Health', { current: 100, max: 100 });
+const Shooter = defineComponent('Shooter', { cooldownUntil: { type: 'f32', default: 0 } });
+const Bullet = defineComponent('Bullet', { ownerId: 0, expiresAt: { type: 'f32', default: 0 } });
+const DeadState = defineComponent('DeadState', { respawnAt: { type: 'f32', default: 0 } });
 
-// Create game with plugins
+// Game setup
 const game = createGame();
-game.addPlugin(Simple2DRenderer, canvas);
+const renderer = game.addPlugin(Simple2DRenderer, canvas);
 const physics = game.addPlugin(Physics2DSystem, { gravity: { x: 0, y: 0 } });
 window.game = game;
 
-// Game constants
-const PLAYER_SPEED = 4;
-const PLAYER_RADIUS = 20;
-const BULLET_SPEED = 12;
-const BULLET_RADIUS = 4;
-const BULLET_LIFETIME = 4500;  // 4.5 seconds
-const SHOOT_COOLDOWN = 500;    // 0.5 seconds between shots
-const RESPAWN_TIME = 3000;     // 3 seconds before respawn
+// Constants
+const PLAYER_SPEED = 4, PLAYER_RADIUS = 20;
+const BULLET_SPEED = 36, BULLET_RADIUS = 4, BULLET_LIFETIME = 4500;
+const SHOOT_COOLDOWN = 250, RESPAWN_TIME = 3000;
+const GUN_LENGTH = 25, GUN_WIDTH = 6;
+const HEALTH_BAR_WIDTH = 40, HEALTH_BAR_HEIGHT = 6, HEALTH_BAR_OFFSET = 30;
+const COLORS = ['#ff6b6b', '#4dabf7', '#69db7c', '#ffd43b', '#da77f2', '#ff8e72',
+    '#38d9a9', '#748ffc', '#f783ac', '#a9e34b', '#3bc9db', '#9775fa'];
 
-// Color palette
-const COLORS = [
-    '#ff6b6b', '#4dabf7', '#69db7c', '#ffd43b', '#da77f2', '#ff8e72',
-    '#38d9a9', '#748ffc', '#f783ac', '#a9e34b', '#3bc9db', '#9775fa'
-];
-
-// Define entity types
+// Entity definitions
 game.defineEntity('player')
     .with(Transform2D)
     .with(Sprite, { shape: SHAPE_CIRCLE, radius: PLAYER_RADIUS, layer: 1 })
     .with(Body2D, { shapeType: SHAPE_CIRCLE, radius: PLAYER_RADIUS, bodyType: BODY_KINEMATIC })
-    .with(Player)
-    .with(Health, { current: 100, max: 100 })
-    .register();
+    .with(Player).with(Health).with(Shooter).register();
 
 game.defineEntity('bullet')
     .with(Transform2D)
     .with(Sprite, { shape: SHAPE_CIRCLE, radius: BULLET_RADIUS, layer: 2 })
-    .with(Body2D, { shapeType: SHAPE_CIRCLE, radius: BULLET_RADIUS, bodyType: BODY_KINEMATIC })
-    .register();
+    .with(Body2D, { shapeType: SHAPE_CIRCLE, radius: BULLET_RADIUS, bodyType: BODY_KINEMATIC, isSensor: true })
+    .with(Bullet).register();
 
 game.defineEntity('wall')
     .with(Transform2D)
     .with(Sprite, { shape: SHAPE_RECT, layer: 0 })
-    .with(Body2D, { shapeType: SHAPE_RECT, bodyType: BODY_STATIC })
-    .register();
+    .with(Body2D, { shapeType: SHAPE_RECT, bodyType: BODY_STATIC }).register();
 
 // Collision: bullet hits player
 physics.onCollision('bullet', 'player', (bullet, player) => {
-    if (bullet.destroyed || player.destroyed) return;
-    // Don't hit the shooter
-    if (bullet.ownerId === player.get(Player).clientId) return;
+    if (bullet.destroyed || player.destroyed || player.has(DeadState)) return;
+    if (bullet.get(Bullet).ownerId === player.get(Player).clientId) return;
 
     const health = player.get(Health);
     health.current -= 25;
     bullet.destroy();
 
     if (health.current <= 0) {
-        player.destroy();
+        player.addComponent(DeadState, { respawnAt: game.time + RESPAWN_TIME });
+        player.get(Sprite).visible = false;
+        player.setVelocity(0, 0);
     }
 });
 
 // Collision: bullet hits wall
-physics.onCollision('bullet', 'wall', (bullet, wall) => {
-    if (bullet.destroyed) return;
-    bullet.destroy();
+physics.onCollision('bullet', 'wall', (bullet) => {
+    if (!bullet.destroyed) bullet.destroy();
 });
 
-// Helper to spawn player
-function spawnPlayer(clientId) {
-    const colorStr = COLORS[(dRandom() * COLORS.length) | 0];
-    const color = game.internString('color', colorStr);
-    const player = game.spawn('player', {
-        x: 100 + (dRandom() * (WIDTH - 200)) | 0,
-        y: 100 + (dRandom() * (HEIGHT - 200)) | 0,
-        clientId,
-        color
-    });
-    player.shootCooldown = 0;
-    return player;
-}
-
-// Helper to spawn bullet - uses moveTowards for deterministic velocity
+// Spawn bullet at gun tip
 function spawnBullet(x, y, target, ownerId) {
+    const dxFp = toFixed(target.x) - toFixed(x);
+    const dyFp = toFixed(target.y) - toFixed(y);
+    const distSq = fpMul(dxFp, dxFp) + fpMul(dyFp, dyFp);
+
+    let spawnX = x, spawnY = y;
+    if (distSq > 0) {
+        const dist = fpSqrt(distSq);
+        const dirX = toFloat(fpDiv(dxFp, dist));
+        const dirY = toFloat(fpDiv(dyFp, dist));
+        spawnX = x + dirX * (PLAYER_RADIUS + GUN_LENGTH);
+        spawnY = y + dirY * (PLAYER_RADIUS + GUN_LENGTH);
+    }
+
     const bullet = game.spawn('bullet', {
-        x, y,
-        color: game.internString('color', '#ffff00')
+        x: spawnX, y: spawnY,
+        color: game.internString('color', '#ffff00'),
+        ownerId, expiresAt: game.time + BULLET_LIFETIME
     });
-    bullet.moveTowards(target, BULLET_SPEED);  // Deterministic direction calculation
-    bullet.ownerId = ownerId;
-    bullet.expiresAt = game.time + BULLET_LIFETIME;
-    return bullet;
+    bullet.moveTowards(target, BULLET_SPEED);
 }
 
-// Helper to spawn wall
-function spawnWall(x, y, w, h) {
-    const wall = game.spawn('wall', { x, y });
-    wall.get(Sprite).width = w;
-    wall.get(Sprite).height = h;
-    wall.get(Sprite).color = game.internString('color', '#4a5568');
-    wall.get(Body2D).width = w;
-    wall.get(Body2D).height = h;
-    return wall;
-}
-
-// Movement system - runs every frame on all clients
+// Movement and shooting system
 game.addSystem(() => {
     for (const player of game.query('player')) {
+        if (player.has(DeadState)) continue;
+
         const playerComp = player.get(Player);
         const input = game.world.getInput(playerComp.clientId);
 
-        if (input?.move) {
-            const body = player.get(Body2D);
-            body.vx = input.move.x * PLAYER_SPEED;
-            body.vy = input.move.y * PLAYER_SPEED;
+        // Movement with fixed-point diagonal normalization
+        if (input?.move && (input.move.x !== 0 || input.move.y !== 0)) {
+            const mx = input.move.x > 0 ? 1 : input.move.x < 0 ? -1 : 0;
+            const my = input.move.y > 0 ? 1 : input.move.y < 0 ? -1 : 0;
+            let vx = mx * PLAYER_SPEED * 60, vy = my * PLAYER_SPEED * 60;
+            if (mx !== 0 && my !== 0) {
+                const INV_SQRT2 = 46341; // 0.7071 * 65536
+                vx = toFloat(fpMul(toFixed(vx), INV_SQRT2));
+                vy = toFloat(fpMul(toFixed(vy), INV_SQRT2));
+            }
+            player.setVelocity(vx, vy);
         } else {
-            player.get(Body2D).vx = 0;
-            player.get(Body2D).vy = 0;
+            player.setVelocity(0, 0);
         }
 
-        // Shooting - use game.time for intuitive timing
-        if (input?.shoot && game.time >= player.shootCooldown && input?.target) {
-            const transform = player.get(Transform2D);
-            // Spawn bullet at player position, moveTowards handles direction
-            spawnBullet(transform.x, transform.y, input.target, playerComp.clientId);
-            player.shootCooldown = game.time + SHOOT_COOLDOWN;
+        // Shooting
+        const shooter = player.get(Shooter);
+        if (input?.shoot && game.time >= shooter.cooldownUntil && input?.target) {
+            const t = player.get(Transform2D);
+            spawnBullet(t.x, t.y, input.target, playerComp.clientId);
+            shooter.cooldownUntil = game.time + SHOOT_COOLDOWN;
         }
     }
 }, { phase: 'update' });
 
-// Bullet lifetime system
+// Bullet lifetime and respawn system
 game.addSystem(() => {
     for (const bullet of game.query('bullet')) {
-        if (game.time >= bullet.expiresAt) {
-            bullet.destroy();
+        if (game.time >= bullet.get(Bullet).expiresAt) bullet.destroy();
+    }
+    for (const player of game.query('player')) {
+        if (player.has(DeadState) && game.time >= player.get(DeadState).respawnAt) {
+            player.get(Health).current = player.get(Health).max;
+            player.get(Transform2D).x = 100 + (dRandom() * (WIDTH - 200)) | 0;
+            player.get(Transform2D).y = 100 + (dRandom() * (HEIGHT - 200)) | 0;
+            player.get(Sprite).visible = true;
+            player.removeComponent(DeadState);
         }
     }
 }, { phase: 'update' });
 
-// Respawn system - track dead players and respawn them
-const deadPlayers = new Map(); // clientId -> respawnTime
+// Gun and health bar rendering
+const originalRender = renderer.render.bind(renderer);
+renderer.render = function() {
+    originalRender();
+    const ctx = renderer.context;
 
-game.addSystem(() => {
-    // Check for dead players
-    for (const clientId of game.getClients()) {
-        const player = game.getEntityByClientId(clientId);
-        if (!player && !deadPlayers.has(clientId)) {
-            deadPlayers.set(clientId, game.time + RESPAWN_TIME);
-        }
+    for (const player of game.query('player')) {
+        if (player.destroyed || player.has(DeadState)) continue;
+        const x = player.render.interpX, y = player.render.interpY;
+        const input = game.world.getInput(player.get(Player).clientId);
+        const t = player.get(Transform2D);
+
+        // Gun
+        const angle = input?.target ? Math.atan2(input.target.y - t.y, input.target.x - t.x) : 0;
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.rotate(angle);
+        ctx.fillStyle = '#222';
+        ctx.fillRect(PLAYER_RADIUS - 5, -GUN_WIDTH / 2, GUN_LENGTH, GUN_WIDTH);
+        ctx.restore();
+
+        // Health bar
+        const health = player.get(Health);
+        const pct = health.current / health.max;
+        const barX = x - HEALTH_BAR_WIDTH / 2, barY = y - HEALTH_BAR_OFFSET;
+        ctx.fillStyle = '#333';
+        ctx.fillRect(barX, barY, HEALTH_BAR_WIDTH, HEALTH_BAR_HEIGHT);
+        ctx.fillStyle = `rgb(${255 * (1 - pct) | 0}, ${255 * pct | 0}, 0)`;
+        ctx.fillRect(barX, barY, HEALTH_BAR_WIDTH * pct, HEALTH_BAR_HEIGHT);
+        ctx.strokeStyle = '#000';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(barX, barY, HEALTH_BAR_WIDTH, HEALTH_BAR_HEIGHT);
     }
+};
 
-    // Respawn players
-    for (const [clientId, respawnTime] of deadPlayers) {
-        if (game.time >= respawnTime) {
-            spawnPlayer(clientId);
-            deadPlayers.delete(clientId);
-        }
-    }
-}, { phase: 'update' });
-
-// Input setup
+// Input
 const input = game.addPlugin(InputPlugin, canvas);
 input.action('move', { type: 'vector', bindings: ['keys:wasd', 'keys:arrows'] });
 input.action('target', { type: 'vector', bindings: ['mouse'] });
 input.action('shoot', { type: 'button', bindings: ['mouse:left'] });
 
-// Connect
-game.connect('2d-shooter-v2', {
-    onRoomCreate() {
-        // Border walls
-        spawnWall(WIDTH / 2, 10, WIDTH, 20);           // Top
-        spawnWall(WIDTH / 2, HEIGHT - 10, WIDTH, 20);  // Bottom
-        spawnWall(10, HEIGHT / 2, 20, HEIGHT);         // Left
-        spawnWall(WIDTH - 10, HEIGHT / 2, 20, HEIGHT); // Right
+// Wall layout
+const WALLS = [
+    [WIDTH / 2, 10, WIDTH, 20], [WIDTH / 2, HEIGHT - 10, WIDTH, 20],
+    [10, HEIGHT / 2, 20, HEIGHT], [WIDTH - 10, HEIGHT / 2, 20, HEIGHT],
+    [WIDTH * 0.25, HEIGHT * 0.25, 100, 100], [WIDTH * 0.75, HEIGHT * 0.25, 100, 100],
+    [WIDTH * 0.25, HEIGHT * 0.75, 100, 100], [WIDTH * 0.75, HEIGHT * 0.75, 100, 100],
+    [WIDTH * 0.5, HEIGHT * 0.5, 150, 150]
+];
 
-        // Some obstacles
-        spawnWall(WIDTH * 0.25, HEIGHT * 0.25, 100, 100);
-        spawnWall(WIDTH * 0.75, HEIGHT * 0.25, 100, 100);
-        spawnWall(WIDTH * 0.25, HEIGHT * 0.75, 100, 100);
-        spawnWall(WIDTH * 0.75, HEIGHT * 0.75, 100, 100);
-        spawnWall(WIDTH * 0.5, HEIGHT * 0.5, 150, 150);
+// Connect
+game.connect('2d-shooter-v15', {
+    onRoomCreate() {
+        const wallColor = game.internString('color', '#4a5568');
+        for (const [x, y, w, h] of WALLS) {
+            const wall = game.spawn('wall', { x, y });
+            wall.get(Sprite).width = w;
+            wall.get(Sprite).height = h;
+            wall.get(Sprite).color = wallColor;
+            wall.get(Body2D).width = w;
+            wall.get(Body2D).height = h;
+        }
     },
     onConnect(clientId) {
-        spawnPlayer(clientId);
+        const color = game.internString('color', COLORS[(dRandom() * COLORS.length) | 0]);
+        game.spawn('player', {
+            x: 100 + (dRandom() * (WIDTH - 200)) | 0,
+            y: 100 + (dRandom() * (HEIGHT - 200)) | 0,
+            clientId, color
+        });
     },
     onDisconnect(clientId) {
         game.getEntityByClientId(clientId)?.destroy();
-        deadPlayers.delete(clientId);
     }
 });
 
