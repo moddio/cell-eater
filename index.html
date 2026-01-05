@@ -155,11 +155,18 @@ function spawnCell(clientId) {
 game.addSystem(() => {
     for (const cell of game.query('cell')) {
         const player = cell.get(Player);
+        const sprite = cell.get(Sprite);
+        const transform = cell.get(Transform2D);
         const input = game.world.getInput(player.clientId);
+
         if (input?.target) {
-            const sprite = cell.get(Sprite);
             cell.moveTowardsWithStop(input.target, SPEED, sprite.radius);
         }
+
+        // Clamp to world boundaries
+        const r = sprite.radius;
+        transform.x = Math.max(r, Math.min(WORLD_WIDTH - r, transform.x));
+        transform.y = Math.max(r, Math.min(WORLD_HEIGHT - r, transform.y));
     }
 }, { phase: 'update' });
 
