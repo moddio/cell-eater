@@ -1510,7 +1510,7 @@ export class Game {
         if (this.gameLoop) return;
 
         let lastSnapshotFrame = 0;
-        const SNAPSHOT_INTERVAL = 100; // Every 5 seconds at 20fps
+        const SNAPSHOT_INTERVAL = 10; // Every 0.5 seconds at 20fps (for debugging)
 
         const loop = () => {
             // Render

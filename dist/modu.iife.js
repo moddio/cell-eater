@@ -1,4 +1,4 @@
-/* Modu Engine - Built: 2026-01-06T21:57:58.850Z - Commit: ad7b993 */
+/* Modu Engine - Built: 2026-01-06T22:01:11.135Z - Commit: 4a34f06 */
 // Modu Engine + Network SDK Combined Bundle
 "use strict";
 var moduNetwork = (() => {
@@ -5543,7 +5543,7 @@ var Modu = (() => {
       if (this.gameLoop)
         return;
       let lastSnapshotFrame = 0;
-      const SNAPSHOT_INTERVAL = 100;
+      const SNAPSHOT_INTERVAL = 10;
       const loop = () => {
         if (this.renderer?.render) {
           this.renderer.render();
@@ -6516,7 +6516,7 @@ var Modu = (() => {
   }
 
   // src/version.ts
-  var ENGINE_VERSION = "ad7b993";
+  var ENGINE_VERSION = "4a34f06";
 
   // src/plugins/debug-ui.ts
   var debugDiv = null;

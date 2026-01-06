@@ -4441,7 +4441,7 @@ var Game = class {
     if (this.gameLoop)
       return;
     let lastSnapshotFrame = 0;
-    const SNAPSHOT_INTERVAL = 100;
+    const SNAPSHOT_INTERVAL = 10;
     const loop = () => {
       if (this.renderer?.render) {
         this.renderer.render();
@@ -5414,7 +5414,7 @@ function disableDeterminismGuard() {
 }
 
 // src/version.ts
-var ENGINE_VERSION = "ad7b993";
+var ENGINE_VERSION = "4a34f06";
 
 // src/plugins/debug-ui.ts
 var debugDiv = null;
