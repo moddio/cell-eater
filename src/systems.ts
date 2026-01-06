@@ -16,14 +16,12 @@ import {
     MAX_FOOD,
     FOOD_SPAWN_CHANCE,
     MIN_SPLIT_RADIUS,
-    SPLIT_VELOCITY,
-    SPLIT_CONTROL_DELAY,
     MAX_CELLS_PER_PLAYER,
     MERGE_DELAY_FRAMES,
     COLORS,
 } from './constants';
 
-// Track merge eligibility frame for each cell
+// Track merge eligibility and split timing
 export const cellMergeFrame = new Map<number, number>();
 export const cellSplitFrame = new Map<number, number>();
 
@@ -100,13 +98,6 @@ export function setupSystems(game: modu.Game): void {
             playerCells.get(cid)!.push(cell);
         }
 
-        // DEBUG: Log cell counts
-        if (game.world.frame % 60 === 0) {
-            for (const [cid, cells] of playerCells) {
-                if (cells.length > 1) console.log(`[SPLIT] cid=${cid} cells=${cells.length}`);
-            }
-        }
-
         const repulsion = new Map<number, { vx: number; vy: number }>();
         const sortedPlayers = [...playerCells.entries()].sort((a, b) =>
             compareStrings(getClientIdStr(game, a[0]), getClientIdStr(game, b[0]))
@@ -163,30 +154,34 @@ export function setupSystems(game: modu.Game): void {
                 let vx = 0, vy = 0;
 
                 if (playerInput?.target) {
-                    const dx = playerInput.target.x - transform.x;
-                    const dy = playerInput.target.y - transform.y;
-                    const distSq = dx * dx + dy * dy;
-                    const dist = Math.sqrt(distSq) || 1;
+                    const tx = playerInput.target.x;
+                    const ty = playerInput.target.y;
 
-                    const stopDist = sprite.radius * 0.2;
-                    if (dist > stopDist) {
-                        vx = (dx / dist) * SPEED;
-                        vy = (dy / dist) * SPEED;
+                    // Skip if target coords are invalid
+                    if (!isFinite(tx) || !isFinite(ty)) {
+                        console.warn('Invalid target:', tx, ty);
+                    } else {
+                        const dx = tx - transform.x;
+                        const dy = ty - transform.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+
+                        if (dist > 5) {
+                            vx = (dx / dist) * SPEED;
+                            vy = (dy / dist) * SPEED;
+                        }
                     }
                 }
 
+                // Add repulsion from sibling cells
                 const rep = repulsion.get(cell.id);
                 if (rep) {
                     vx += rep.vx;
                     vy += rep.vy;
                 }
 
-                // Don't override velocity for recently split cells
                 const splitFrame = cellSplitFrame.get(cell.id) || 0;
-                const framesSinceSplit = game.world.frame - splitFrame;
-                if (framesSinceSplit > SPLIT_CONTROL_DELAY) {
-                    body.vx = vx;
-                    body.vy = vy;
+                if (game.world.frame - splitFrame > 30) {
+                    body.setVelocity(vx, vy);
                 }
 
                 const r = sprite.radius;
@@ -232,37 +227,39 @@ export function setupSystems(game: modu.Game): void {
                 .slice(0, MAX_CELLS_PER_PLAYER - cells.length);
 
             for (const cell of cellsToSplit) {
-                const transform = cell.get(modu.Transform2D);
-                const sprite = cell.get(modu.Sprite);
-                const body = cell.get(modu.Body2D);
-                const colorStr = game.getString('color', sprite.color);
+                const t = cell.get(modu.Transform2D);
+                const s = cell.get(modu.Sprite);
+                const b = cell.get(modu.Body2D);
 
-                const dx = playerInput.target.x - transform.x;
-                const dy = playerInput.target.y - transform.y;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                const dirX = dist > 0 ? dx / dist : 0;
-                const dirY = dist > 0 ? dy / dist : 1;
+                // Direction to cursor
+                const dx = playerInput.target.x - t.x;
+                const dy = playerInput.target.y - t.y;
+                const len = Math.sqrt(dx * dx + dy * dy) || 1;
 
-                const newRadius = sprite.radius / Math.SQRT2;
-
-                sprite.radius = newRadius;
-                body.radius = newRadius;
+                // Halve radius
+                const r = s.radius / Math.SQRT2;
+                s.radius = r;
+                b.radius = r;
 
                 const clientIdStr = game.getClientIdString(clientId);
                 if (!clientIdStr) continue;
 
+                // Spawn new cell and apply impulse towards cursor
                 const newCell = spawnCell(game, clientIdStr, {
-                    x: transform.x + dirX * newRadius * 2,
-                    y: transform.y + dirY * newRadius * 2,
-                    radius: newRadius,
-                    color: colorStr,
-                    vx: dirX * SPLIT_VELOCITY,
-                    vy: dirY * SPLIT_VELOCITY
+                    x: t.x,
+                    y: t.y,
+                    radius: r,
+                    color: game.getString('color', s.color)
                 });
 
+                const newBody = newCell.get(modu.Body2D);
+                newBody.impulseX = (dx / len) * 400;
+                newBody.impulseY = (dy / len) * 400;
+                newBody.damping = 0.05;
+
+                // Track timing
                 const mergeFrame = game.world.frame + MERGE_DELAY_FRAMES;
                 cellMergeFrame.set(cell.id, mergeFrame);
-                cellSplitFrame.set(cell.id, game.world.frame);
                 cellMergeFrame.set(newCell.id, mergeFrame);
                 cellSplitFrame.set(newCell.id, game.world.frame);
             }

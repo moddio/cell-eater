@@ -12,7 +12,7 @@ export const MIN_ZOOM = 0.35;
 export const ZOOM_SCALE_FACTOR = 0.004;
 
 // Movement
-export const SPEED = 400;
+export const SPEED = 200;
 
 // Cell sizing
 export const INITIAL_RADIUS = 20;

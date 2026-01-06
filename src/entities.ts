@@ -19,8 +19,9 @@ export function defineEntities(game: modu.Game): void {
         .with(modu.Body2D, { shapeType: modu.SHAPE_CIRCLE, radius: 8, bodyType: modu.BODY_STATIC })
         .register();
 
-    // Camera entity - client-only (sync: false is built into Camera2D component)
+    // Camera entity - client-only, excluded from snapshots entirely
     game.defineEntity('camera')
         .with(modu.Camera2D, { smoothing: 0.15 })
+        .syncNone()
         .register();
 }

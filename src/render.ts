@@ -57,10 +57,10 @@ export function updateCamera(
 
     const camera = cameraEntity.get(modu.Camera2D);
 
+    let totalSize = 0;
     let totalArea = 0;
     let centerX = 0;
     let centerY = 0;
-    let totalRadius = 0;
 
     for (const cell of cells) {
         const transform = cell.get(modu.Transform2D);
@@ -70,7 +70,7 @@ export function updateCamera(
         centerX += transform.x * area;
         centerY += transform.y * area;
         totalArea += area;
-        totalRadius += sprite.radius;
+        totalSize += sprite.radius;
     }
 
     if (totalArea > 0) {
@@ -80,20 +80,7 @@ export function updateCamera(
         camera.x += (centerX - camera.x) * camera.smoothing;
         camera.y += (centerY - camera.y) * camera.smoothing;
 
-        const avgRadius = totalRadius / cells.length;
-        camera.targetZoom = Math.max(MIN_ZOOM, BASE_ZOOM - (avgRadius - INITIAL_RADIUS) * ZOOM_SCALE_FACTOR);
-
-        if (cells.length > 1) {
-            let maxDist = 0;
-            for (const cell of cells) {
-                const t = cell.get(modu.Transform2D);
-                const dist = Math.sqrt((t.x - centerX) ** 2 + (t.y - centerY) ** 2);
-                maxDist = Math.max(maxDist, dist);
-            }
-            const spreadZoom = Math.max(0.3, 1 - maxDist / 800);
-            camera.targetZoom = Math.min(camera.targetZoom, spreadZoom);
-        }
-
+        camera.targetZoom = Math.max(MIN_ZOOM, BASE_ZOOM - (totalSize - INITIAL_RADIUS) * ZOOM_SCALE_FACTOR);
         camera.zoom += (camera.targetZoom - camera.zoom) * camera.smoothing;
     }
 }
@@ -101,7 +88,7 @@ export function updateCamera(
 export function createRenderer(
     game: modu.Game,
     renderer: modu.Simple2DRenderer,
-    cameraEntity: modu.Entity,
+    getCameraEntity: () => modu.Entity,
     canvas: HTMLCanvasElement,
     minimapCanvas: HTMLCanvasElement,
     sizeDisplay: HTMLElement,
@@ -113,6 +100,7 @@ export function createRenderer(
     const HEIGHT = canvas.height;
 
     function renderMinimap(): void {
+        const cameraEntity = getCameraEntity();
         const camera = cameraEntity.get(modu.Camera2D);
         const mmW = minimapCanvas.width;
         const mmH = minimapCanvas.height;
@@ -175,36 +163,15 @@ export function createRenderer(
     }
 
     return function renderWithCamera(): void {
+        const cameraEntity = getCameraEntity();
         const alpha = game.getRenderAlpha();
         const camera = cameraEntity.get(modu.Camera2D);
 
         updateCamera(game, cameraEntity, getLocalClientId);
 
-        let camX = camera.x, camY = camera.y;
-        const localId = getLocalClientId();
-        if (localId !== null) {
-            const cells = getPlayerCells(game, localId);
-            if (cells.length > 0) {
-                let totalArea = 0;
-                let centerX = 0;
-                let centerY = 0;
-
-                for (const cell of cells) {
-                    if (cell.destroyed || !cell.render) continue;
-                    cell.interpolate(alpha);
-                    const sprite = cell.get(modu.Sprite);
-                    const area = sprite.radius * sprite.radius;
-                    centerX += cell.render.interpX * area;
-                    centerY += cell.render.interpY * area;
-                    totalArea += area;
-                }
-
-                if (totalArea > 0) {
-                    camX = centerX / totalArea;
-                    camY = centerY / totalArea;
-                }
-            }
-        }
+        // Use camera position directly (matches input coordinate conversion)
+        const camX = camera.x;
+        const camY = camera.y;
 
         // Clear canvas
         ctx.fillStyle = '#f2f2f2';
@@ -312,6 +279,7 @@ export function createRenderer(
         renderMinimap();
 
         // Update size display
+        const localId = getLocalClientId();
         if (localId !== null) {
             const cells = getPlayerCells(game, localId);
             const totalRadius = cells.reduce((sum, c) => sum + c.get(modu.Sprite).radius, 0);

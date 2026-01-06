@@ -40,7 +40,7 @@ function getLocalClientId(): number | null {
     return game.internClientId(clientId);
 }
 
-function setupInput(): void {
+function setupInput(getCameraEntity: () => modu.Entity): void {
     mouseX = WIDTH / 2;
     mouseY = HEIGHT / 2;
 
@@ -53,8 +53,8 @@ function setupInput(): void {
     input.action('target', {
         type: 'vector',
         bindings: [() => {
-            // Convert screen coordinates to world coordinates using camera
-            const cam = cameraEntity.get(modu.Camera2D);
+            // Convert screen to world coordinates
+            const cam = getCameraEntity().get(modu.Camera2D);
             const worldX = (mouseX - WIDTH / 2) / cam.zoom + cam.x;
             const worldY = (mouseY - HEIGHT / 2) / cam.zoom + cam.y;
             return { x: worldX, y: worldY };
@@ -94,12 +94,24 @@ export function initGame(): void {
     cam.y = WORLD_HEIGHT / 2;
     renderer.camera = cameraEntity;
 
-    setupInput();
+    // Helper to ensure camera entity exists (survives snapshot loads)
+    function ensureCameraEntity(): modu.Entity {
+        if (!cameraEntity || cameraEntity.destroyed || !cameraEntity.has(modu.Camera2D)) {
+            cameraEntity = game.spawn('camera');
+            const cam = cameraEntity.get(modu.Camera2D);
+            cam.x = WORLD_WIDTH / 2;
+            cam.y = WORLD_HEIGHT / 2;
+            renderer.camera = cameraEntity;
+        }
+        return cameraEntity;
+    }
+
+    setupInput(ensureCameraEntity);
 
     renderer.render = createRenderer(
         game,
         renderer,
-        cameraEntity,
+        ensureCameraEntity,  // Pass getter function
         canvas,
         minimapCanvas,
         sizeDisplay,
@@ -119,7 +131,7 @@ export function initGame(): void {
                 const player = game.getEntityByClientId(clientId);
                 if (player) {
                     const t = player.get(modu.Transform2D);
-                    const cam = cameraEntity.get(modu.Camera2D);
+                    const cam = ensureCameraEntity().get(modu.Camera2D);
                     cam.x = t.x;
                     cam.y = t.y;
                 }

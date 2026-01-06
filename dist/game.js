@@ -51,7 +51,7 @@ var CellEater = (() => {
   var BASE_ZOOM = 1;
   var MIN_ZOOM = 0.35;
   var ZOOM_SCALE_FACTOR = 4e-3;
-  var SPEED = 400;
+  var SPEED = 200;
   var INITIAL_RADIUS = 20;
   var MAX_RADIUS = 200;
   var EAT_RATIO = 1.2;
@@ -61,8 +61,6 @@ var CellEater = (() => {
   var MAX_FOOD = 1600;
   var FOOD_SPAWN_CHANCE = 0.15;
   var MIN_SPLIT_RADIUS = 15;
-  var SPLIT_VELOCITY = 400;
-  var SPLIT_CONTROL_DELAY = 30;
   var MAX_CELLS_PER_PLAYER = 16;
   var MERGE_DELAY_FRAMES = 600;
   var COLORS = [
@@ -97,7 +95,7 @@ var CellEater = (() => {
   function defineEntities(game2) {
     game2.defineEntity("cell").with(modu.Transform2D).with(modu.Sprite, { shape: modu.SHAPE_CIRCLE, radius: INITIAL_RADIUS, layer: 1 }).with(modu.Body2D, { shapeType: modu.SHAPE_CIRCLE, radius: INITIAL_RADIUS, bodyType: modu.BODY_KINEMATIC }).with(modu.Player).register();
     game2.defineEntity("food").with(modu.Transform2D).with(modu.Sprite, { shape: modu.SHAPE_CIRCLE, radius: 8, layer: 0 }).with(modu.Body2D, { shapeType: modu.SHAPE_CIRCLE, radius: 8, bodyType: modu.BODY_STATIC }).register();
-    game2.defineEntity("camera").with(modu.Camera2D, { smoothing: 0.15 }).register();
+    game2.defineEntity("camera").with(modu.Camera2D, { smoothing: 0.15 }).syncNone().register();
   }
 
   // src/systems.ts
@@ -170,12 +168,6 @@ var CellEater = (() => {
           playerCells.set(cid, []);
         playerCells.get(cid).push(cell);
       }
-      if (game2.world.frame % 60 === 0) {
-        for (const [cid, cells] of playerCells) {
-          if (cells.length > 1)
-            console.log(`[SPLIT] cid=${cid} cells=${cells.length}`);
-        }
-      }
       const repulsion = /* @__PURE__ */ new Map();
       const sortedPlayers = [...playerCells.entries()].sort(
         (a, b) => compareStrings(getClientIdStr(game2, a[0]), getClientIdStr(game2, b[0]))
@@ -223,14 +215,18 @@ var CellEater = (() => {
           const body = cell.get(modu2.Body2D);
           let vx = 0, vy = 0;
           if (playerInput?.target) {
-            const dx = playerInput.target.x - transform.x;
-            const dy = playerInput.target.y - transform.y;
-            const distSq = dx * dx + dy * dy;
-            const dist = (0, import_modu_engine.dSqrt)(distSq) || 1;
-            const stopDist = sprite.radius * 0.2;
-            if (dist > stopDist) {
-              vx = dx / dist * SPEED;
-              vy = dy / dist * SPEED;
+            const tx = playerInput.target.x;
+            const ty = playerInput.target.y;
+            if (!isFinite(tx) || !isFinite(ty)) {
+              console.warn("Invalid target:", tx, ty);
+            } else {
+              const dx = tx - transform.x;
+              const dy = ty - transform.y;
+              const dist = (0, import_modu_engine.dSqrt)(dx * dx + dy * dy);
+              if (dist > 5) {
+                vx = dx / dist * SPEED;
+                vy = dy / dist * SPEED;
+              }
             }
           }
           const rep = repulsion.get(cell.id);
@@ -239,10 +235,8 @@ var CellEater = (() => {
             vy += rep.vy;
           }
           const splitFrame = cellSplitFrame.get(cell.id) || 0;
-          const framesSinceSplit = game2.world.frame - splitFrame;
-          if (framesSinceSplit > SPLIT_CONTROL_DELAY) {
-            body.vx = vx;
-            body.vy = vy;
+          if (game2.world.frame - splitFrame > 30) {
+            body.setVelocity(vx, vy);
           }
           const r = sprite.radius;
           transform.x = Math.max(r, Math.min(WORLD_WIDTH - r, transform.x));
@@ -280,32 +274,30 @@ var CellEater = (() => {
           continue;
         const cellsToSplit = cells.filter((c) => c.get(modu2.Sprite).radius >= MIN_SPLIT_RADIUS).slice(0, MAX_CELLS_PER_PLAYER - cells.length);
         for (const cell of cellsToSplit) {
-          const transform = cell.get(modu2.Transform2D);
-          const sprite = cell.get(modu2.Sprite);
-          const body = cell.get(modu2.Body2D);
-          const colorStr = game2.getString("color", sprite.color);
-          const dx = playerInput.target.x - transform.x;
-          const dy = playerInput.target.y - transform.y;
-          const dist = (0, import_modu_engine.dSqrt)(dx * dx + dy * dy);
-          const dirX = dist > 0 ? dx / dist : 0;
-          const dirY = dist > 0 ? dy / dist : 1;
-          const newRadius = sprite.radius / Math.SQRT2;
-          sprite.radius = newRadius;
-          body.radius = newRadius;
+          const t = cell.get(modu2.Transform2D);
+          const s = cell.get(modu2.Sprite);
+          const b = cell.get(modu2.Body2D);
+          const dx = playerInput.target.x - t.x;
+          const dy = playerInput.target.y - t.y;
+          const len = (0, import_modu_engine.dSqrt)(dx * dx + dy * dy) || 1;
+          const r = s.radius / Math.SQRT2;
+          s.radius = r;
+          b.radius = r;
           const clientIdStr = game2.getClientIdString(clientId);
           if (!clientIdStr)
             continue;
           const newCell = spawnCell(game2, clientIdStr, {
-            x: transform.x + dirX * newRadius * 2,
-            y: transform.y + dirY * newRadius * 2,
-            radius: newRadius,
-            color: colorStr,
-            vx: dirX * SPLIT_VELOCITY,
-            vy: dirY * SPLIT_VELOCITY
+            x: t.x,
+            y: t.y,
+            radius: r,
+            color: game2.getString("color", s.color)
           });
+          const newBody = newCell.get(modu2.Body2D);
+          newBody.impulseX = dx / len * 400;
+          newBody.impulseY = dy / len * 400;
+          newBody.damping = 0.05;
           const mergeFrame = game2.world.frame + MERGE_DELAY_FRAMES;
           cellMergeFrame.set(cell.id, mergeFrame);
-          cellSplitFrame.set(cell.id, game2.world.frame);
           cellMergeFrame.set(newCell.id, mergeFrame);
           cellSplitFrame.set(newCell.id, game2.world.frame);
         }
@@ -394,7 +386,6 @@ var CellEater = (() => {
   }
 
   // src/render.ts
-  var import_modu_engine2 = __toESM(require_modu_engine());
   var modu3 = __toESM(require_modu_engine());
   function lightenColor(hex, percent) {
     const num = parseInt(hex.slice(1), 16);
@@ -424,10 +415,10 @@ var CellEater = (() => {
     if (cells.length === 0)
       return;
     const camera = cameraEntity2.get(modu3.Camera2D);
+    let totalSize = 0;
     let totalArea = 0;
     let centerX = 0;
     let centerY = 0;
-    let totalRadius = 0;
     for (const cell of cells) {
       const transform = cell.get(modu3.Transform2D);
       const sprite = cell.get(modu3.Sprite);
@@ -435,34 +426,24 @@ var CellEater = (() => {
       centerX += transform.x * area;
       centerY += transform.y * area;
       totalArea += area;
-      totalRadius += sprite.radius;
+      totalSize += sprite.radius;
     }
     if (totalArea > 0) {
       centerX /= totalArea;
       centerY /= totalArea;
       camera.x += (centerX - camera.x) * camera.smoothing;
       camera.y += (centerY - camera.y) * camera.smoothing;
-      const avgRadius = totalRadius / cells.length;
-      camera.targetZoom = Math.max(MIN_ZOOM, BASE_ZOOM - (avgRadius - INITIAL_RADIUS) * ZOOM_SCALE_FACTOR);
-      if (cells.length > 1) {
-        let maxDist = 0;
-        for (const cell of cells) {
-          const t = cell.get(modu3.Transform2D);
-          const dist = (0, import_modu_engine2.dSqrt)((t.x - centerX) ** 2 + (t.y - centerY) ** 2);
-          maxDist = Math.max(maxDist, dist);
-        }
-        const spreadZoom = Math.max(0.3, 1 - maxDist / 800);
-        camera.targetZoom = Math.min(camera.targetZoom, spreadZoom);
-      }
+      camera.targetZoom = Math.max(MIN_ZOOM, BASE_ZOOM - (totalSize - INITIAL_RADIUS) * ZOOM_SCALE_FACTOR);
       camera.zoom += (camera.targetZoom - camera.zoom) * camera.smoothing;
     }
   }
-  function createRenderer(game2, renderer2, cameraEntity2, canvas2, minimapCanvas2, sizeDisplay2, getLocalClientId2) {
+  function createRenderer(game2, renderer2, getCameraEntity, canvas2, minimapCanvas2, sizeDisplay2, getLocalClientId2) {
     const ctx = renderer2.context;
     const minimapCtx = minimapCanvas2.getContext("2d");
     const WIDTH2 = canvas2.width;
     const HEIGHT2 = canvas2.height;
     function renderMinimap() {
+      const cameraEntity2 = getCameraEntity();
       const camera = cameraEntity2.get(modu3.Camera2D);
       const mmW = minimapCanvas2.width;
       const mmH = minimapCanvas2.height;
@@ -518,33 +499,12 @@ var CellEater = (() => {
       }
     }
     return function renderWithCamera() {
+      const cameraEntity2 = getCameraEntity();
       const alpha = game2.getRenderAlpha();
       const camera = cameraEntity2.get(modu3.Camera2D);
       updateCamera(game2, cameraEntity2, getLocalClientId2);
-      let camX = camera.x, camY = camera.y;
-      const localId = getLocalClientId2();
-      if (localId !== null) {
-        const cells = getPlayerCells(game2, localId);
-        if (cells.length > 0) {
-          let totalArea = 0;
-          let centerX = 0;
-          let centerY = 0;
-          for (const cell of cells) {
-            if (cell.destroyed || !cell.render)
-              continue;
-            cell.interpolate(alpha);
-            const sprite = cell.get(modu3.Sprite);
-            const area = sprite.radius * sprite.radius;
-            centerX += cell.render.interpX * area;
-            centerY += cell.render.interpY * area;
-            totalArea += area;
-          }
-          if (totalArea > 0) {
-            camX = centerX / totalArea;
-            camY = centerY / totalArea;
-          }
-        }
-      }
+      const camX = camera.x;
+      const camY = camera.y;
       ctx.fillStyle = "#f2f2f2";
       ctx.fillRect(0, 0, WIDTH2, HEIGHT2);
       ctx.save();
@@ -630,6 +590,7 @@ var CellEater = (() => {
       }
       ctx.restore();
       renderMinimap();
+      const localId = getLocalClientId2();
       if (localId !== null) {
         const cells = getPlayerCells(game2, localId);
         const totalRadius = cells.reduce((sum, c) => sum + c.get(modu3.Sprite).radius, 0);
@@ -658,7 +619,7 @@ var CellEater = (() => {
       return null;
     return game.internClientId(clientId);
   }
-  function setupInput() {
+  function setupInput(getCameraEntity) {
     mouseX = WIDTH / 2;
     mouseY = HEIGHT / 2;
     canvas.addEventListener("mousemove", (e) => {
@@ -669,7 +630,7 @@ var CellEater = (() => {
     input.action("target", {
       type: "vector",
       bindings: [() => {
-        const cam = cameraEntity.get(modu4.Camera2D);
+        const cam = getCameraEntity().get(modu4.Camera2D);
         const worldX = (mouseX - WIDTH / 2) / cam.zoom + cam.x;
         const worldY = (mouseY - HEIGHT / 2) / cam.zoom + cam.y;
         return { x: worldX, y: worldY };
@@ -700,11 +661,22 @@ var CellEater = (() => {
     cam.x = WORLD_WIDTH / 2;
     cam.y = WORLD_HEIGHT / 2;
     renderer.camera = cameraEntity;
-    setupInput();
+    function ensureCameraEntity() {
+      if (!cameraEntity || cameraEntity.destroyed || !cameraEntity.has(modu4.Camera2D)) {
+        cameraEntity = game.spawn("camera");
+        const cam2 = cameraEntity.get(modu4.Camera2D);
+        cam2.x = WORLD_WIDTH / 2;
+        cam2.y = WORLD_HEIGHT / 2;
+        renderer.camera = cameraEntity;
+      }
+      return cameraEntity;
+    }
+    setupInput(ensureCameraEntity);
     renderer.render = createRenderer(
       game,
       renderer,
-      cameraEntity,
+      ensureCameraEntity,
+      // Pass getter function
       canvas,
       minimapCanvas,
       sizeDisplay,
@@ -723,7 +695,7 @@ var CellEater = (() => {
           const player = game.getEntityByClientId(clientId);
           if (player) {
             const t = player.get(modu4.Transform2D);
-            const cam2 = cameraEntity.get(modu4.Camera2D);
+            const cam2 = ensureCameraEntity().get(modu4.Camera2D);
             cam2.x = t.x;
             cam2.y = t.y;
           }
