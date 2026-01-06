@@ -334,9 +334,10 @@ async function build() {
     }
 
     // Update engine URL in dist/index.html, setting engine URL
+    // Use regex to match CDN URL with any or no version parameter
     let indexHtml = fs.readFileSync('dist/index.html', 'utf8');
     indexHtml = indexHtml.replace(localEngineUrl, engineUrl);
-    indexHtml = indexHtml.replace(cdnEngineUrl, engineUrl);
+    indexHtml = indexHtml.replace(/https:\/\/cdn\.moduengine\.com\/modu\.min\.js(\?v=\d+)?/, engineUrl);
     fs.writeFileSync('dist/index.html', indexHtml);
     console.log('[build] Engine: ' + (isCI ? 'CDN (CI)' : 'localhost'));
 
