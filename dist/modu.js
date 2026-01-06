@@ -5384,7 +5384,7 @@ function disableDeterminismGuard() {
 }
 
 // src/version.ts
-var ENGINE_VERSION = "6ecb87d";
+var ENGINE_VERSION = "0d19690";
 
 // src/plugins/debug-ui.ts
 var debugDiv = null;
@@ -8700,4 +8700,3 @@ export {
   vec3ToFloats,
   vec3Zero
 };
-//# sourceMappingURL=modu.js.map
