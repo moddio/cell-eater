@@ -328,9 +328,9 @@ async function build() {
     }
 
     // Copy index.html to dist
-    let indexHtml = fs.readFileSync('index.html', 'utf8');
+    let indexHtml = fs.readFileSync('src/index.html', 'utf8');
     fs.writeFileSync('dist/index.html', indexHtml);
-    console.log('[build] Copied index.html to dist/');
+    console.log('[build] Copied src/index.html to dist/');
     console.log('[build] Using engine from CDN: https://cdn.moduengine.com/modu.min.js');
 
     if (watch) {
