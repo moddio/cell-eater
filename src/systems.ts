@@ -44,7 +44,7 @@ function compareStrings(a: string, b: string): number {
 // Helper: Group cells by player, sorted deterministically
 function getPlayerCellsGrouped(game: modu.Game): Map<number, modu.Entity[]> {
     const playerCells = new Map<number, modu.Entity[]>();
-    const allCells = [...game.query('cell')].sort((a, b) => a.id - b.id);
+    const allCells = [...game.query('cell')].sort((a, b) => a.eid - b.eid);
 
     for (const cell of allCells) {
         if (cell.destroyed) continue;
@@ -123,7 +123,7 @@ export function setupSystems(game: modu.Game): void {
 
         for (const [, siblings] of sortedPlayers) {
             for (const cell of siblings) {
-                repulsion.set(cell.id, { vx: 0, vy: 0 });
+                repulsion.set(cell.eid, { vx: 0, vy: 0 });
             }
 
             if (siblings.length < 2) continue;
@@ -151,8 +151,8 @@ export function setupSystems(game: modu.Game): void {
                         const nx = dx / dist;
                         const ny = dy / dist;
 
-                        const repA = repulsion.get(cellA.id)!;
-                        const repB = repulsion.get(cellB.id)!;
+                        const repA = repulsion.get(cellA.eid)!;
+                        const repB = repulsion.get(cellB.eid)!;
                         repA.vx += nx * pushForce;
                         repA.vy += ny * pushForce;
                         repB.vx -= nx * pushForce;
@@ -190,7 +190,7 @@ export function setupSystems(game: modu.Game): void {
                 }
 
                 // Add repulsion from sibling cells
-                const rep = repulsion.get(cell.id);
+                const rep = repulsion.get(cell.eid);
                 if (rep) {
                     vx += rep.vx;
                     vy += rep.vy;
@@ -262,8 +262,8 @@ export function setupSystems(game: modu.Game): void {
 
                 // Track merge timing
                 const mergeFrame = game.world.frame + MERGE_DELAY_FRAMES;
-                cellMergeFrame.set(cell.id, mergeFrame);
-                cellMergeFrame.set(newCell.id, mergeFrame);
+                cellMergeFrame.set(cell.eid, mergeFrame);
+                cellMergeFrame.set(newCell.eid, mergeFrame);
             }
         }
     }, { phase: 'update' });
@@ -280,7 +280,7 @@ export function setupSystems(game: modu.Game): void {
             // Sort by radius (largest first) for deterministic merge order
             cells.sort((a, b) => {
                 const radiusDiff = b.get(modu.Sprite).radius - a.get(modu.Sprite).radius;
-                return radiusDiff !== 0 ? radiusDiff : a.id - b.id;
+                return radiusDiff !== 0 ? radiusDiff : a.eid - b.eid;
             });
 
             for (let i = 0; i < cells.length; i++) {
@@ -295,8 +295,8 @@ export function setupSystems(game: modu.Game): void {
                     if (cellB.destroyed) continue;
 
                     // Check merge cooldown
-                    const mergeFrameA = cellMergeFrame.get(cellA.id) || 0;
-                    const mergeFrameB = cellMergeFrame.get(cellB.id) || 0;
+                    const mergeFrameA = cellMergeFrame.get(cellA.eid) || 0;
+                    const mergeFrameB = cellMergeFrame.get(cellB.eid) || 0;
                     if (currentFrame < mergeFrameA || currentFrame < mergeFrameB) continue;
 
                     const tB = cellB.get(modu.Transform2D);
@@ -308,6 +308,9 @@ export function setupSystems(game: modu.Game): void {
                     const mergeThreshold = (sA.radius + sB.radius) * MERGE_THRESHOLD;
 
                     if (dist < mergeThreshold) {
+                        console.log('MERGE: cellA.eid=', cellA.eid, 'clientId=', cellA.get(modu.Player).clientId);
+                        console.log('MERGE: cellB.eid=', cellB.eid, 'clientId=', cellB.get(modu.Player).clientId);
+
                         // Merge: combine areas
                         const areaA = sA.radius * sA.radius;
                         const areaB = sB.radius * sB.radius;
@@ -316,7 +319,9 @@ export function setupSystems(game: modu.Game): void {
                         sA.radius = newRadius;
                         cellA.get(modu.Body2D).radius = newRadius;
                         cellB.destroy();
-                        cellMergeFrame.delete(cellB.id);
+                        cellMergeFrame.delete(cellB.eid);
+
+                        console.log('AFTER MERGE: cellA.clientId=', cellA.get(modu.Player).clientId);
                     }
                 }
             }
@@ -345,7 +350,7 @@ export function setupCollisions(game: modu.Game, physics: modu.Physics2DSystem):
             eaterSprite.radius = Math.min(eaterSprite.radius + preySprite.radius * PLAYER_GROW, MAX_RADIUS);
             cellA.get(modu.Body2D).radius = eaterSprite.radius;
             cellB.destroy();
-            cellMergeFrame.delete(cellB.id);
+            cellMergeFrame.delete(cellB.eid);
         }
     });
 }

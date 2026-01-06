@@ -32,7 +32,7 @@ export const FOOD_SPAWN_CHANCE = 0.15;
 export const MIN_SPLIT_RADIUS = 15;
 export const SPLIT_IMPULSE = 800;
 export const MAX_CELLS_PER_PLAYER = 16;
-export const MERGE_DELAY_FRAMES = 600;
+export const MERGE_DELAY_FRAMES = 300;  // 5 seconds at 60fps;
 export const MERGE_THRESHOLD = 0.5;
 
 // Physics
