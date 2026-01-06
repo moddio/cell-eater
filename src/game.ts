@@ -871,6 +871,7 @@ export class Game {
         // Run each tick
         for (let f = 0; f < ticksToRun; f++) {
             const tickFrame = startFrame + f;
+            this.currentFrame = tickFrame;  // Update so processInput records correct frame
 
             // Process inputs for this frame (already sorted by seq)
             const frameInputs = inputsByFrame.get(tickFrame) || [];
