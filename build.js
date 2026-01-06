@@ -322,16 +322,23 @@ async function build() {
     const watch = args.includes('--watch');
     const serve = args.includes('--serve');
 
+    // Auto-detect: CI/GitHub Actions = production (CDN), otherwise local
+    const isCI = process.env.CI || process.env.GITHUB_ACTIONS;
+    const localEngineUrl = 'http://localhost:3001/dist/modu.min.js';
+    const cdnEngineUrl = 'https://cdn.moduengine.com/modu.min.js';
+    const engineUrl = isCI ? cdnEngineUrl : localEngineUrl;
+
     // Ensure dist directory exists
     if (!fs.existsSync('dist')) {
         fs.mkdirSync('dist');
     }
 
-    // Copy index.html to dist
-    let indexHtml = fs.readFileSync('src/index.html', 'utf8');
+    // Update engine URL in dist/index.html, setting engine URL
+    let indexHtml = fs.readFileSync('dist/index.html', 'utf8');
+    indexHtml = indexHtml.replace(localEngineUrl, engineUrl);
+    indexHtml = indexHtml.replace(cdnEngineUrl, engineUrl);
     fs.writeFileSync('dist/index.html', indexHtml);
-    console.log('[build] Copied src/index.html to dist/');
-    console.log('[build] Using engine from CDN: https://cdn.moduengine.com/modu.min.js');
+    console.log('[build] Engine: ' + (isCI ? 'CDN (CI)' : 'localhost'));
 
     if (watch) {
         const ctx = await esbuild.context(buildOptions);

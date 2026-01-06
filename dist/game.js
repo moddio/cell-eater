@@ -220,6 +220,9 @@ var CellEater = (() => {
       }
       for (const [clientId, cells] of sortedPlayers) {
         const playerInput = game2.world.getInput(clientId);
+        if (game2.world.frame % 60 === 0) {
+          console.log(`[MOVE] clientId=${clientId} cells=${cells.length} hasInput=${!!playerInput} hasTarget=${!!playerInput?.target}`);
+        }
         for (const cell of cells) {
           const sprite = cell.get(modu2.Sprite);
           const transform = cell.get(modu2.Transform2D);
@@ -242,6 +245,10 @@ var CellEater = (() => {
           if (rep) {
             vx += rep.vx;
             vy += rep.vy;
+          }
+          if (game2.world.frame % 30 === 0 && (vx !== 0 || vy !== 0)) {
+            const speed = (0, import_modu_engine.dSqrt)(vx * vx + vy * vy);
+            console.log(`[VEL] speed=${speed.toFixed(1)} vx=${vx.toFixed(1)} vy=${vy.toFixed(1)}`);
           }
           cell.setVelocity(vx, vy);
           const r = sprite.radius;
