@@ -5384,7 +5384,7 @@ function disableDeterminismGuard() {
 }
 
 // src/version.ts
-var ENGINE_VERSION = "834769b";
+var ENGINE_VERSION = "6ecb87d";
 
 // src/plugins/debug-ui.ts
 var debugDiv = null;
@@ -5497,7 +5497,7 @@ function enableDebugUI(target, options = {}) {
             <div>Client: <span style="color:#ff0">${clientId ? clientId.slice(0, 8) : "-"}</span></div>
 
             <div style="${sectionStyle}">ENGINE</div>
-            <div>Version: <span style="color:#888">${ENGINE_VERSION}</span></div>
+            <div>Commit: <span style="color:#888">${ENGINE_VERSION}</span></div>
             <div>FPS: <span style="color:#0f0">${renderFps}</span> render, <span style="color:#0f0">${fps}</span> tick</div>
             <div>Net: <span style="color:#0f0">${upStr}</span> up, <span style="color:#f80">${downStr}</span> down</div>
 
@@ -8700,3 +8700,4 @@ export {
   vec3ToFloats,
   vec3Zero
 };
+//# sourceMappingURL=modu.js.map
