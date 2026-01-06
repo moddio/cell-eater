@@ -1,6 +1,7 @@
 import * as esbuild from 'esbuild';
 import * as path from 'path';
 import * as fs from 'fs';
+import { execSync } from 'child_process';
 
 const docsDir = path.join(process.cwd(), '..', 'docs', 'public', 'sdk');
 const distDir = path.join(process.cwd(), 'dist');
@@ -15,9 +16,10 @@ if (!fs.existsSync(distDir)) {
 
 console.log('Building Modu Engine for Browser...\n');
 
-// Generate build timestamp banner
+// Generate build timestamp banner with git commit hash
 const buildDate = new Date().toISOString();
-const banner = `/* Modu Engine - Built: ${buildDate} */\n`;
+const commitHash = execSync('git rev-parse --short HEAD').toString().trim();
+const banner = `/* Modu Engine - Built: ${buildDate} - Commit: ${commitHash} */\n`;
 
 // Read network SDK source
 const networkSdkPath = path.join(process.cwd(), '..', 'network', 'sdk', 'dist', 'modu-network.iife.js');
