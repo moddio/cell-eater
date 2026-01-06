@@ -20,6 +20,10 @@ export declare const Body2D: ComponentType<{
     vx: number;
     vy: number;
     angularVelocity: number;
+    forceX: number;
+    forceY: number;
+    impulseX: number;
+    impulseY: number;
     width: number;
     height: number;
     radius: number;
@@ -28,6 +32,7 @@ export declare const Body2D: ComponentType<{
     friction: number;
     bodyType: number;
     shapeType: number;
+    damping: number;
     isSensor: boolean;
 }>;
 /**
@@ -101,6 +106,10 @@ export type Body2DData = {
     vx: number;
     vy: number;
     angularVelocity: number;
+    forceX: number;
+    forceY: number;
+    impulseX: number;
+    impulseY: number;
     width: number;
     height: number;
     radius: number;

@@ -87,7 +87,7 @@ export interface ConnectOptions {
 }
 
 // Debug flag - set to false for production
-const DEBUG_NETWORK = true;
+const DEBUG_NETWORK = false;
 
 // ==========================================
 // Prefab Class

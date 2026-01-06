@@ -15,21 +15,61 @@ const path = require('path');
 const buildOptions = {
     entryPoints: ['src/index.ts'],
     bundle: true,
-    outfile: 'dist/modu.js',
+    outdir: 'dist',
+    entryNames: '[name]-[hash]',
     format: 'esm',
     sourcemap: true,
     target: 'es2020',
     platform: 'browser',
     logLevel: 'info',
+    metafile: true,
 };
 
 // Also build IIFE for script tag usage
 const iifeBuildOptions = {
-    ...buildOptions,
-    outfile: 'dist/modu.iife.js',
+    entryPoints: ['src/index.ts'],
+    bundle: true,
+    outdir: 'dist',
+    entryNames: '[name].iife-[hash]',
     format: 'iife',
     globalName: 'Modu',
+    sourcemap: true,
+    target: 'es2020',
+    platform: 'browser',
+    logLevel: 'info',
+    metafile: true,
 };
+
+// Clean old hashed files
+function cleanOldBuilds() {
+    if (!fs.existsSync('dist')) return;
+    const files = fs.readdirSync('dist');
+    for (const file of files) {
+        // Match files like index-HASH.js, index.iife-HASH.js and their sourcemaps
+        if (/^index(-|\.iife-)[a-f0-9]+\.js(\.map)?$/.test(file)) {
+            fs.unlinkSync(path.join('dist', file));
+        }
+    }
+}
+
+// Write manifest with current filenames
+function writeManifest(esmResult, iifeResult) {
+    const manifest = {};
+
+    for (const [outfile] of Object.entries(esmResult.metafile.outputs)) {
+        if (outfile.endsWith('.js') && !outfile.endsWith('.map')) {
+            manifest['modu.js'] = path.basename(outfile);
+        }
+    }
+    for (const [outfile] of Object.entries(iifeResult.metafile.outputs)) {
+        if (outfile.endsWith('.js') && !outfile.endsWith('.map')) {
+            manifest['modu.iife.js'] = path.basename(outfile);
+        }
+    }
+
+    fs.writeFileSync('dist/manifest.json', JSON.stringify(manifest, null, 2));
+    console.log('[build] Manifest:', manifest);
+}
 
 async function build() {
     const args = process.argv.slice(2);
@@ -40,6 +80,9 @@ async function build() {
     if (!fs.existsSync('dist')) {
         fs.mkdirSync('dist');
     }
+
+    // Clean old hashed builds
+    cleanOldBuilds();
 
     // Copy example index.html if it exists
     if (fs.existsSync('examples/index.html')) {
@@ -73,10 +116,11 @@ async function build() {
             console.log(`[build] Serving at http://localhost:${port}`);
         }
     } else {
-        await Promise.all([
+        const [esmResult, iifeResult] = await Promise.all([
             esbuild.build(buildOptions),
             esbuild.build(iifeBuildOptions),
         ]);
+        writeManifest(esmResult, iifeResult);
         console.log('[build] Done!');
     }
 }

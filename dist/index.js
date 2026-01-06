@@ -30,7 +30,7 @@ export { Game, createGame, Prefab } from './game';
 // ============================================
 // Plugins
 // ============================================
-export { Simple2DRenderer } from './plugins/simple-2d-renderer';
+export { Simple2DRenderer, Simple2DRenderer as AutoRenderer } from './plugins/simple-2d-renderer';
 export { InputPlugin } from './plugins/input-plugin';
 export { CameraSystem } from './plugins/camera-system';
 export { enableDebugUI } from './plugins/debug-ui';

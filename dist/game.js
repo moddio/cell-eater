@@ -15,7 +15,7 @@ import { encode, decode } from './codec';
 import { loadRandomState, saveRandomState } from './math/random';
 import { INDEX_MASK } from './core/constants';
 // Debug flag - set to false for production
-const DEBUG_NETWORK = true;
+const DEBUG_NETWORK = false;
 // ==========================================
 // Prefab Class
 // ==========================================

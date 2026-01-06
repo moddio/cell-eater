@@ -13,7 +13,7 @@ export type { WorldState, EntityState, NetworkInput, ComponentSchema, ComponentT
 export { Transform2D, Body2D, Player, Sprite, Camera2D, BODY_DYNAMIC, BODY_STATIC, BODY_KINEMATIC, SHAPE_RECT, SHAPE_CIRCLE, SPRITE_IMAGE } from './components';
 export { Game, createGame, Prefab } from './game';
 export type { GameCallbacks } from './game';
-export { Simple2DRenderer, Simple2DRendererOptions } from './plugins/simple-2d-renderer';
+export { Simple2DRenderer, Simple2DRenderer as AutoRenderer, Simple2DRendererOptions } from './plugins/simple-2d-renderer';
 export { InputPlugin } from './plugins/input-plugin';
 export { CameraSystem, CameraSystemOptions } from './plugins/camera-system';
 export { enableDebugUI, DebugUITarget } from './plugins/debug-ui';

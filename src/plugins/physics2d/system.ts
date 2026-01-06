@@ -302,6 +302,29 @@ export class Physics2DSystem {
                 body.angle = toFixed(transform.angle);
             }
 
+            // Apply impulses (instant velocity change)
+            if (bodyData.impulseX !== 0 || bodyData.impulseY !== 0) {
+                bodyData.vx += bodyData.impulseX;
+                bodyData.vy += bodyData.impulseY;
+                bodyData.impulseX = 0;
+                bodyData.impulseY = 0;
+            }
+
+            // Apply forces (add to velocity)
+            if (bodyData.forceX !== 0 || bodyData.forceY !== 0) {
+                bodyData.vx += bodyData.forceX;
+                bodyData.vy += bodyData.forceY;
+                bodyData.forceX = 0;
+                bodyData.forceY = 0;
+            }
+
+            // Apply damping
+            if (bodyData.damping > 0) {
+                const damp = 1 - bodyData.damping;
+                bodyData.vx *= damp;
+                bodyData.vy *= damp;
+            }
+
             // Sync velocity for all body types
             const newVelX = toFixed(bodyData.vx);
             const newVelY = toFixed(bodyData.vy);

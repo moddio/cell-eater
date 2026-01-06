@@ -27,6 +27,14 @@ export const Body2D = defineComponent('Body2D', {
     // Angular velocity
     angularVelocity: 0,
 
+    // Force accumulator (added to velocity each frame, then cleared)
+    forceX: 0,
+    forceY: 0,
+
+    // Impulse accumulator (added to velocity once, then cleared)
+    impulseX: 0,
+    impulseY: 0,
+
     // Size (use width/height OR radius)
     width: 0,
     height: 0,
@@ -44,6 +52,7 @@ export const Body2D = defineComponent('Body2D', {
     shapeType: 1,
 
     // Is sensor (no collision response, just events)
+    damping: 0,
     isSensor: false
 });
 
@@ -151,6 +160,10 @@ export type Body2DData = {
     vx: number;
     vy: number;
     angularVelocity: number;
+    forceX: number;
+    forceY: number;
+    impulseX: number;
+    impulseY: number;
     width: number;
     height: number;
     radius: number;
