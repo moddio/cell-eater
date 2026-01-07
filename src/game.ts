@@ -1005,6 +1005,7 @@ export class Game {
         return {
             frame: this.currentFrame,
             seq: this.lastInputSeq,
+            postTick: true, // Snapshot is taken after tick - late joiners should NOT re-run this frame
             format: 5, // Format 5: type-indexed compact encoding
             types,     // Type names array (sent once)
             schema,    // Component schemas indexed by type index
