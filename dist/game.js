@@ -430,9 +430,13 @@ export class Game {
                 this.processAuthorityChainInput(input);
             }
             // 3. Call onSnapshot callback
+            // CRITICAL: onSnapshot runs ONLY on late joiners, so we MUST isolate RNG.
+            // Any dRandom() usage here would advance late joiner's RNG while authority's stays unchanged.
+            const rngStateSnapshot = saveRandomState();
             if (this.callbacks.onSnapshot) {
                 this.callbacks.onSnapshot(this.world.getAllEntities());
             }
+            loadRandomState(rngStateSnapshot);
             // 4. Filter inputs already in snapshot
             const snapshotSeq = snapshot.seq || 0;
             const pendingInputs = inputs
@@ -556,6 +560,12 @@ export class Game {
             if (DEBUG_NETWORK) {
                 console.log(`[ecs] Join: ${clientId.slice(0, 8)}, authority=${this.authorityClientId?.slice(0, 8)}`);
             }
+            // CRITICAL: Save RNG state before conditional callback.
+            // onConnect may be skipped for clients that already have entities from snapshot.
+            // If the callback uses dRandom(), we must ensure the global RNG is NOT affected,
+            // so that all clients maintain identical RNG state regardless of which callbacks ran.
+            // The entity positions from callbacks are preserved in snapshots - only RNG sync matters.
+            const rngState = saveRandomState();
             // Call callback ONLY if this client doesn't already have an entity from snapshot
             // This prevents duplicate entity creation during catchup
             if (this.clientsWithEntitiesFromSnapshot.has(clientId)) {
@@ -566,6 +576,8 @@ export class Game {
             else {
                 this.callbacks.onConnect?.(clientId);
             }
+            // Restore RNG state - callback's random usage doesn't affect global simulation RNG
+            loadRandomState(rngState);
             // Mark snapshot needed
             if (this.checkIsAuthority()) {
                 this.pendingSnapshotUpload = true;
@@ -584,8 +596,13 @@ export class Game {
             if (DEBUG_NETWORK) {
                 console.log(`[ecs] Leave: ${clientId.slice(0, 8)}, new authority=${this.authorityClientId?.slice(0, 8)}`);
             }
-            // Call callback
+            // CRITICAL: Save/restore RNG around onDisconnect callback.
+            // While onDisconnect typically runs on all clients, we isolate it for safety.
+            // If the callback has conditional logic or error handling that uses dRandom(),
+            // isolating it prevents subtle desyncs.
+            const rngStateDisconnect = saveRandomState();
             this.callbacks.onDisconnect?.(clientId);
+            loadRandomState(rngStateDisconnect);
         }
         else if (data) {
             // Game input - store in world's input registry
@@ -667,6 +684,7 @@ export class Game {
         // Run each tick
         for (let f = 0; f < ticksToRun; f++) {
             const tickFrame = startFrame + f;
+            this.currentFrame = tickFrame; // Update so processInput records correct frame
             // Process inputs for this frame (already sorted by seq)
             const frameInputs = inputsByFrame.get(tickFrame) || [];
             for (const input of frameInputs) {

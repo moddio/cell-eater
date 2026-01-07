@@ -53,7 +53,9 @@ export function enableDebugUI(target, options = {}) {
         border-radius: 4px;
         z-index: 10000;
         min-width: 180px;
-        pointer-events: none;
+        user-select: text;
+        cursor: text;
+        
     `;
     document.body.appendChild(debugDiv);
     // Update loop

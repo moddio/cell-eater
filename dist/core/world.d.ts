@@ -226,8 +226,8 @@ export declare class World {
      */
     loadSparseSnapshot(snapshot: SparseSnapshot): void;
     /**
-     * Sync render state with current transform positions.
-     * Called after snapshot restore to prevent interpolation artifacts.
+     * Sync render state after snapshot restore.
+     * Uses saved visual positions for smooth interpolation.
      */
     private syncRenderStateFromTransforms;
     /**

@@ -128,17 +128,6 @@ export declare class Entity {
         y: number;
     }, speed: number): void;
     /**
-     * Set velocity toward a target, but stop if within radius.
-     *
-     * @param target Target position {x, y}
-     * @param speed Speed in units per second
-     * @param stopRadius Stop moving when within this distance (default: 0)
-     */
-    moveTowardsWithStop(target: {
-        x: number;
-        y: number;
-    }, speed: number, stopRadius?: number): void;
-    /**
      * Stop all movement.
      */
     stop(): void;
