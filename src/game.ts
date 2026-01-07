@@ -13,7 +13,6 @@ import {
     spawnFood,
     spawnCell,
     getPlayerCells,
-    cellMergeFrame,
 } from './systems';
 import { createRenderer } from './render';
 
@@ -177,7 +176,6 @@ export function initGame(): void {
             const internedId = game.internClientId(clientId);
             for (const cell of getPlayerCells(game, internedId)) {
                 cell.destroy();
-                cellMergeFrame.delete(cell.id);
             }
         }
     });

@@ -4,6 +4,7 @@
 
 import * as modu from 'modu-engine';
 import { SpawnCellOptions } from './types';
+import { MergeCooldown } from './entities';
 import {
     WORLD_WIDTH,
     WORLD_HEIGHT,
@@ -26,8 +27,6 @@ import {
     COLORS,
 } from './constants';
 
-// Track merge eligibility
-export const cellMergeFrame = new Map<number, number>();
 
 // Simple hash function for deterministic spawn positions
 function hashString(str: string): number {
@@ -284,8 +283,8 @@ export function setupSystems(game: modu.Game): void {
 
                 // Track merge timing
                 const mergeFrame = game.world.frame + MERGE_DELAY_FRAMES;
-                cellMergeFrame.set(cell.eid, mergeFrame);
-                cellMergeFrame.set(newCell.eid, mergeFrame);
+                cell.get(MergeCooldown).frame = mergeFrame;
+                newCell.get(MergeCooldown).frame = mergeFrame;
             }
         }
     }, { phase: 'update' });
@@ -317,8 +316,8 @@ export function setupSystems(game: modu.Game): void {
                     if (cellB.destroyed) continue;
 
                     // Check merge cooldown
-                    const mergeFrameA = cellMergeFrame.get(cellA.eid) || 0;
-                    const mergeFrameB = cellMergeFrame.get(cellB.eid) || 0;
+                    const mergeFrameA = cellA.get(MergeCooldown).frame;
+                    const mergeFrameB = cellB.get(MergeCooldown).frame;
                     if (currentFrame < mergeFrameA || currentFrame < mergeFrameB) continue;
 
                     const tB = cellB.get(modu.Transform2D);
@@ -341,7 +340,6 @@ export function setupSystems(game: modu.Game): void {
                         sA.radius = newRadius;
                         cellA.get(modu.Body2D).radius = newRadius;
                         cellB.destroy();
-                        cellMergeFrame.delete(cellB.eid);
 
                         console.log('AFTER MERGE: cellA.clientId=', cellA.get(modu.Player).clientId);
                     }
@@ -372,7 +370,6 @@ export function setupCollisions(game: modu.Game, physics: modu.Physics2DSystem):
             eaterSprite.radius = Math.min(eaterSprite.radius + preySprite.radius * PLAYER_GROW, MAX_RADIUS);
             cellA.get(modu.Body2D).radius = eaterSprite.radius;
             cellB.destroy();
-            cellMergeFrame.delete(cellB.eid);
         }
     });
 }

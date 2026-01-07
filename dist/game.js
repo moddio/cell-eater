@@ -98,8 +98,9 @@ var CellEater = (() => {
 
   // src/entities.ts
   var modu = __toESM(require_modu_engine());
+  var MergeCooldown = modu.defineComponent("MergeCooldown", { frame: 0 });
   function defineEntities(game2) {
-    game2.defineEntity("cell").with(modu.Transform2D).with(modu.Sprite, { shape: modu.SHAPE_CIRCLE, radius: INITIAL_RADIUS, layer: 1 }).with(modu.Body2D, { shapeType: modu.SHAPE_CIRCLE, radius: INITIAL_RADIUS, bodyType: modu.BODY_KINEMATIC }).with(modu.Player).register();
+    game2.defineEntity("cell").with(modu.Transform2D).with(modu.Sprite, { shape: modu.SHAPE_CIRCLE, radius: INITIAL_RADIUS, layer: 1 }).with(modu.Body2D, { shapeType: modu.SHAPE_CIRCLE, radius: INITIAL_RADIUS, bodyType: modu.BODY_KINEMATIC }).with(modu.Player).with(MergeCooldown).register();
     game2.defineEntity("food").with(modu.Transform2D).with(modu.Sprite, { shape: modu.SHAPE_CIRCLE, radius: 8, layer: 0 }).with(modu.Body2D, { shapeType: modu.SHAPE_CIRCLE, radius: 8, bodyType: modu.BODY_STATIC }).register();
     game2.defineEntity("camera").with(modu.Camera2D, { smoothing: 0.25 }).syncNone().register();
   }
@@ -107,7 +108,6 @@ var CellEater = (() => {
   // src/systems.ts
   var import_modu_engine = __toESM(require_modu_engine());
   var modu2 = __toESM(require_modu_engine());
-  var cellMergeFrame = /* @__PURE__ */ new Map();
   function hashString(str) {
     let hash = 0;
     for (let i = 0; i < str.length; i++) {
@@ -303,8 +303,8 @@ var CellEater = (() => {
           newBody.impulseX = dx / len * SPLIT_IMPULSE;
           newBody.impulseY = dy / len * SPLIT_IMPULSE;
           const mergeFrame = game2.world.frame + MERGE_DELAY_FRAMES;
-          cellMergeFrame.set(cell.eid, mergeFrame);
-          cellMergeFrame.set(newCell.eid, mergeFrame);
+          cell.get(MergeCooldown).frame = mergeFrame;
+          newCell.get(MergeCooldown).frame = mergeFrame;
         }
       }
     }, { phase: "update" });
@@ -329,8 +329,8 @@ var CellEater = (() => {
             const cellB = cells[j];
             if (cellB.destroyed)
               continue;
-            const mergeFrameA = cellMergeFrame.get(cellA.eid) || 0;
-            const mergeFrameB = cellMergeFrame.get(cellB.eid) || 0;
+            const mergeFrameA = cellA.get(MergeCooldown).frame;
+            const mergeFrameB = cellB.get(MergeCooldown).frame;
             if (currentFrame < mergeFrameA || currentFrame < mergeFrameB)
               continue;
             const tB = cellB.get(modu2.Transform2D);
@@ -348,7 +348,6 @@ var CellEater = (() => {
               sA.radius = newRadius;
               cellA.get(modu2.Body2D).radius = newRadius;
               cellB.destroy();
-              cellMergeFrame.delete(cellB.eid);
               console.log("AFTER MERGE: cellA.clientId=", cellA.get(modu2.Player).clientId);
             }
           }
@@ -375,7 +374,6 @@ var CellEater = (() => {
         eaterSprite.radius = Math.min(eaterSprite.radius + preySprite.radius * PLAYER_GROW, MAX_RADIUS);
         cellA.get(modu2.Body2D).radius = eaterSprite.radius;
         cellB.destroy();
-        cellMergeFrame.delete(cellB.eid);
       }
     });
   }
@@ -729,7 +727,6 @@ var CellEater = (() => {
         const internedId = game.internClientId(clientId);
         for (const cell of getPlayerCells(game, internedId)) {
           cell.destroy();
-          cellMergeFrame.delete(cell.id);
         }
       }
     });
