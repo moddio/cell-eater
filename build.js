@@ -325,7 +325,7 @@ async function build() {
     // Auto-detect: CI/GitHub Actions = production (CDN), otherwise local
     const isCI = process.env.CI || process.env.GITHUB_ACTIONS;
     const localEngineUrl = 'http://localhost:3001/dist/modu.min.js';
-    const cdnEngineUrl = `https://cdn.moduengine.com/modu.min.js?v=${Date.now()}`;
+    const cdnEngineUrl = `https://cdn.moduengine.com/modu.min.js`;
     const engineUrl = isCI ? cdnEngineUrl : localEngineUrl;
     console.log("testing");
 
