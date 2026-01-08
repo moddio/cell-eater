@@ -8,6 +8,7 @@
  * Also enables determinism guard to warn about non-deterministic function calls.
  */
 import { enableDeterminismGuard } from './determinism-guard';
+import { ENGINE_VERSION } from '../version';
 let debugDiv = null;
 let updateInterval = null;
 let hashCallback = null;
@@ -52,7 +53,9 @@ export function enableDebugUI(target, options = {}) {
         border-radius: 4px;
         z-index: 10000;
         min-width: 180px;
-        pointer-events: none;
+        user-select: text;
+        cursor: text;
+        
     `;
     document.body.appendChild(debugDiv);
     // Update loop
@@ -106,9 +109,9 @@ export function enableDebugUI(target, options = {}) {
         const downStr = formatBandwidth(down);
         // Get drift stats (field-by-field comparison)
         const driftStats = eng.getDriftStats?.() || { determinismPercent: 100, totalChecks: 0, matchingFieldCount: 0, totalFieldCount: 0 };
-        const detPct = driftStats.determinismPercent.toFixed(1);
-        const detColor = driftStats.determinismPercent >= 99.9 ? '#0f0' :
-            driftStats.determinismPercent >= 95 ? '#ff0' : '#f00';
+        const detPct = (Math.floor(driftStats.determinismPercent * 10) / 10).toFixed(1);
+        const detColor = driftStats.determinismPercent === 100 ? '#0f0' :
+            driftStats.determinismPercent >= 99 ? '#ff0' : '#f00';
         // Format sync status
         let syncStatus;
         if (isAuthority) {
@@ -149,6 +152,7 @@ export function enableDebugUI(target, options = {}) {
             <div>Client: <span style="color:#ff0">${clientId ? clientId.slice(0, 8) : '-'}</span></div>
 
             <div style="${sectionStyle}">ENGINE</div>
+            <div>Commit: <span style="color:#888">${ENGINE_VERSION}</span></div>
             <div>FPS: <span style="color:#0f0">${renderFps}</span> render, <span style="color:#0f0">${fps}</span> tick</div>
             <div>Net: <span style="color:#0f0">${upStr}</span> up, <span style="color:#f80">${downStr}</span> down</div>
 

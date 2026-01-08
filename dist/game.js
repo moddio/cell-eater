@@ -430,9 +430,13 @@ export class Game {
                 this.processAuthorityChainInput(input);
             }
             // 3. Call onSnapshot callback
+            // CRITICAL: onSnapshot runs ONLY on late joiners, so we MUST isolate RNG.
+            // Any dRandom() usage here would advance late joiner's RNG while authority's stays unchanged.
+            const rngStateSnapshot = saveRandomState();
             if (this.callbacks.onSnapshot) {
                 this.callbacks.onSnapshot(this.world.getAllEntities());
             }
+            loadRandomState(rngStateSnapshot);
             // 4. Filter inputs already in snapshot
             const snapshotSeq = snapshot.seq || 0;
             const pendingInputs = inputs
@@ -449,6 +453,12 @@ export class Game {
             if (ticksToRun > 0) {
                 this.runCatchup(startFrame, frame, pendingInputs);
             }
+            // Store as last good snapshot - we just loaded authority's state
+            this.lastGoodSnapshot = {
+                snapshot: JSON.parse(JSON.stringify(snapshot)),
+                frame: this.currentFrame,
+                hash: this.getStateHash()
+            };
         }
         else {
             // === FIRST JOINER PATH ===
@@ -550,6 +560,12 @@ export class Game {
             if (DEBUG_NETWORK) {
                 console.log(`[ecs] Join: ${clientId.slice(0, 8)}, authority=${this.authorityClientId?.slice(0, 8)}`);
             }
+            // CRITICAL: Save RNG state before conditional callback.
+            // onConnect may be skipped for clients that already have entities from snapshot.
+            // If the callback uses dRandom(), we must ensure the global RNG is NOT affected,
+            // so that all clients maintain identical RNG state regardless of which callbacks ran.
+            // The entity positions from callbacks are preserved in snapshots - only RNG sync matters.
+            const rngState = saveRandomState();
             // Call callback ONLY if this client doesn't already have an entity from snapshot
             // This prevents duplicate entity creation during catchup
             if (this.clientsWithEntitiesFromSnapshot.has(clientId)) {
@@ -560,6 +576,8 @@ export class Game {
             else {
                 this.callbacks.onConnect?.(clientId);
             }
+            // Restore RNG state - callback's random usage doesn't affect global simulation RNG
+            loadRandomState(rngState);
             // Mark snapshot needed
             if (this.checkIsAuthority()) {
                 this.pendingSnapshotUpload = true;
@@ -578,8 +596,13 @@ export class Game {
             if (DEBUG_NETWORK) {
                 console.log(`[ecs] Leave: ${clientId.slice(0, 8)}, new authority=${this.authorityClientId?.slice(0, 8)}`);
             }
-            // Call callback
+            // CRITICAL: Save/restore RNG around onDisconnect callback.
+            // While onDisconnect typically runs on all clients, we isolate it for safety.
+            // If the callback has conditional logic or error handling that uses dRandom(),
+            // isolating it prevents subtle desyncs.
+            const rngStateDisconnect = saveRandomState();
             this.callbacks.onDisconnect?.(clientId);
+            loadRandomState(rngStateDisconnect);
         }
         else if (data) {
             // Game input - store in world's input registry
@@ -661,6 +684,7 @@ export class Game {
         // Run each tick
         for (let f = 0; f < ticksToRun; f++) {
             const tickFrame = startFrame + f;
+            this.currentFrame = tickFrame; // Update so processInput records correct frame
             // Process inputs for this frame (already sorted by seq)
             const frameInputs = inputsByFrame.get(tickFrame) || [];
             for (const input of frameInputs) {
@@ -1129,20 +1153,47 @@ export class Game {
     showDivergenceDiff(diffs, inputs, frame) {
         const lines = [];
         const lastGoodFrame = this.lastGoodSnapshot?.frame ?? 0;
+        const myClientId = this.localClientIdStr || '';
+        // Build client legend (assign P1, P2, etc.)
+        const clientIds = new Set();
+        for (const input of inputs) {
+            clientIds.add(input.clientId);
+        }
+        const clientList = Array.from(clientIds);
+        const clientLabels = new Map();
+        clientList.forEach((cid, i) => {
+            const label = cid === myClientId ? 'ME' : `P${i + 1}`;
+            clientLabels.set(cid, label);
+        });
+        // Try to find entity owners (entities with Player component)
+        const entityOwners = new Map();
+        for (const entity of this.world.getAllEntities()) {
+            if (entity.has(Player)) {
+                const playerData = entity.get(Player);
+                const ownerClientId = this.numToClientId.get(playerData.clientId);
+                if (ownerClientId) {
+                    entityOwners.set(entity.eid, clientLabels.get(ownerClientId) || ownerClientId.slice(0, 8));
+                }
+            }
+        }
         lines.push(`=== DIVERGENCE DEBUG DATA ===`);
-        lines.push(`Frame: ${frame} | Last good: ${lastGoodFrame} | Client: ${this.localClientIdStr?.slice(0, 8)} | Authority: ${this.checkIsAuthority()}`);
+        lines.push(`Frame: ${frame} | Last good: ${lastGoodFrame} | Authority: ${this.checkIsAuthority()}`);
+        lines.push(`Clients: ${clientList.map(cid => `${clientLabels.get(cid)}=${cid.slice(0, 8)}`).join(', ')}`);
         lines.push(``);
         lines.push(`DIVERGENT FIELDS (${diffs.length}):`);
         for (const d of diffs) {
             const delta = typeof d.local === 'number' && typeof d.server === 'number'
                 ? ` Δ${d.local - d.server}`
                 : '';
-            lines.push(`  ${d.entity}#${d.eid.toString(16)}.${d.comp}.${d.field}: local=${d.local} server=${d.server}${delta}`);
+            const owner = entityOwners.get(d.eid);
+            const ownerStr = owner ? ` [${owner}]` : '';
+            lines.push(`  ${d.entity}#${d.eid.toString(16)}${ownerStr}.${d.comp}.${d.field}: local=${d.local} server=${d.server}${delta}`);
         }
         lines.push(``);
         lines.push(`INPUTS (${inputs.length}):`);
         for (const input of inputs) {
-            lines.push(`  f${input.frame} ${input.clientId.slice(0, 8)}: ${JSON.stringify(input.data)}`);
+            const label = clientLabels.get(input.clientId) || input.clientId.slice(0, 8);
+            lines.push(`  f${input.frame} [${label}]: ${JSON.stringify(input.data)}`);
         }
         lines.push(``);
         if (this.lastGoodSnapshot) {
@@ -1190,7 +1241,8 @@ export class Game {
         if (this.gameLoop)
             return;
         let lastSnapshotFrame = 0;
-        const SNAPSHOT_INTERVAL = 100; // Every 5 seconds at 20fps
+        const isLocalhost = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+        const SNAPSHOT_INTERVAL = isLocalhost ? 10 : 100; // 0.5s locally, 5s in prod (at 20fps)
         const loop = () => {
             // Render
             if (this.renderer?.render) {

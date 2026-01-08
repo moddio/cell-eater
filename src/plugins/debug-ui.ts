@@ -10,6 +10,7 @@
 
 import { enableDeterminismGuard } from './determinism-guard';
 import type { Game } from '../game';
+import { ENGINE_VERSION } from '../version';
 
 /** Interface for objects that can be displayed in debug UI */
 export interface DebugUITarget {
@@ -82,7 +83,9 @@ export function enableDebugUI(target?: DebugUITarget, options: DebugUIOptions = 
         border-radius: 4px;
         z-index: 10000;
         min-width: 180px;
-        pointer-events: none;
+        user-select: text;
+        cursor: text;
+        
     `;
     document.body.appendChild(debugDiv);
 
@@ -140,9 +143,9 @@ export function enableDebugUI(target?: DebugUITarget, options: DebugUIOptions = 
 
         // Get drift stats (field-by-field comparison)
         const driftStats = (eng as any).getDriftStats?.() || { determinismPercent: 100, totalChecks: 0, matchingFieldCount: 0, totalFieldCount: 0 };
-        const detPct = driftStats.determinismPercent.toFixed(1);
-        const detColor = driftStats.determinismPercent >= 99.9 ? '#0f0' :
-                        driftStats.determinismPercent >= 95 ? '#ff0' : '#f00';
+        const detPct = (Math.floor(driftStats.determinismPercent * 10) / 10).toFixed(1);
+        const detColor = driftStats.determinismPercent === 100 ? '#0f0' :
+                        driftStats.determinismPercent >= 99 ? '#ff0' : '#f00';
 
         // Format sync status
         let syncStatus: string;
@@ -185,6 +188,7 @@ export function enableDebugUI(target?: DebugUITarget, options: DebugUIOptions = 
             <div>Client: <span style="color:#ff0">${clientId ? clientId.slice(0, 8) : '-'}</span></div>
 
             <div style="${sectionStyle}">ENGINE</div>
+            <div>Commit: <span style="color:#888">${ENGINE_VERSION}</span></div>
             <div>FPS: <span style="color:#0f0">${renderFps}</span> render, <span style="color:#0f0">${fps}</span> tick</div>
             <div>Net: <span style="color:#0f0">${upStr}</span> up, <span style="color:#f80">${downStr}</span> down</div>
 

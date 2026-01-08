@@ -1213,6 +1213,33 @@ var Entity = class {
     body.vy = toFloat(fpDiv(fpMul(dy, speedFp), dist));
   }
   /**
+   * Set velocity toward a target, but stop if within radius.
+   *
+   * @param target Target position {x, y}
+   * @param speed Speed in units per second
+   * @param stopRadius Stop moving when within this distance (default: 0)
+   */
+  moveTowardsWithStop(target, speed, stopRadius = 0) {
+    if (!this.has(Transform2D) || !this.has(Body2D))
+      return;
+    const transform = this.get(Transform2D);
+    const body = this.get(Body2D);
+    const dx = toFixed(target.x) - toFixed(transform.x);
+    const dy = toFixed(target.y) - toFixed(transform.y);
+    const distSq = fpMul(dx, dx) + fpMul(dy, dy);
+    const stopRadiusFp = toFixed(stopRadius);
+    const stopRadiusSq = fpMul(stopRadiusFp, stopRadiusFp);
+    if (distSq <= stopRadiusSq) {
+      body.vx = 0;
+      body.vy = 0;
+      return;
+    }
+    const dist = fpSqrt(distSq);
+    const speedFp = toFixed(speed * 60);
+    body.vx = toFloat(fpDiv(fpMul(dx, speedFp), dist));
+    body.vy = toFloat(fpDiv(fpMul(dy, speedFp), dist));
+  }
+  /**
    * Stop all movement.
    */
   stop() {
@@ -2824,16 +2851,6 @@ var World = class {
    * Load sparse snapshot (efficient format).
    */
   loadSparseSnapshot(snapshot) {
-    const savedVisualPositions = /* @__PURE__ */ new Map();
-    for (const eid of this.activeEntities) {
-      const entity = this.entityPool.get(eid);
-      if (entity) {
-        savedVisualPositions.set(eid, {
-          x: entity.render.interpX,
-          y: entity.render.interpY
-        });
-      }
-    }
     this.snapshotCodec.decode(
       snapshot,
       () => this.clearForSnapshot(),
@@ -2848,22 +2865,17 @@ var World = class {
     );
     this.frame = snapshot.frame;
     this.seq = snapshot.seq;
-    this.syncRenderStateFromTransforms(savedVisualPositions);
+    this.syncRenderStateFromTransforms();
   }
   /**
-   * Sync render state after snapshot restore.
-   * Uses saved visual positions for smooth interpolation.
+   * Sync render state with current transform positions.
+   * Called after snapshot restore to prevent interpolation artifacts.
    */
-  syncRenderStateFromTransforms(savedPositions) {
+  syncRenderStateFromTransforms() {
     for (const eid of this.activeEntities) {
       const entity = this.getEntity(eid);
       if (!entity)
         continue;
-      const saved = savedPositions.get(eid);
-      if (saved) {
-        entity.render.prevX = saved.x;
-        entity.render.prevY = saved.y;
-      }
       const components = this.entityComponents.get(eid) || [];
       const index = eid & INDEX_MASK;
       for (const component of components) {
@@ -2871,8 +2883,12 @@ var World = class {
           const xArr = component.storage.fields["x"];
           const yArr = component.storage.fields["y"];
           if (xArr && yArr) {
-            entity.render.interpX = xArr[index] / 65536;
-            entity.render.interpY = yArr[index] / 65536;
+            const x = xArr[index] / 65536;
+            const y = yArr[index] / 65536;
+            entity.render.prevX = x;
+            entity.render.prevY = y;
+            entity.render.interpX = x;
+            entity.render.interpY = y;
           }
           break;
         }
@@ -3949,7 +3965,6 @@ var Game = class {
     }
     for (let f = 0; f < ticksToRun; f++) {
       const tickFrame = startFrame + f;
-      this.currentFrame = tickFrame;
       const frameInputs = inputsByFrame.get(tickFrame) || [];
       for (const input of frameInputs) {
         this.processInput(input);
@@ -5400,7 +5415,7 @@ function disableDeterminismGuard() {
 }
 
 // src/version.ts
-var ENGINE_VERSION = "bd14907";
+var ENGINE_VERSION = "63bd2a3";
 
 // src/plugins/debug-ui.ts
 var debugDiv = null;
@@ -5431,9 +5446,7 @@ function enableDebugUI(target, options = {}) {
         border-radius: 4px;
         z-index: 10000;
         min-width: 180px;
-        user-select: text;
-        cursor: text;
-        
+        pointer-events: none;
     `;
   document.body.appendChild(debugDiv);
   const update = (now) => {
@@ -8718,3 +8731,4 @@ export {
   vec3ToFloats,
   vec3Zero
 };
+//# sourceMappingURL=index-HLSO37EF.js.map
