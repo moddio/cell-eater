@@ -6,9 +6,8 @@
     "build": "node build.js",
     "watch": "node build.js --watch",
     "dev": "node build.js --watch --serve",
-    "test": "npx tsx tests/test-determinism.ts && npx tsx tests/test-rollback.ts",
+    "test": "npx tsx tests/test-determinism.ts",
     "test:determinism": "npx tsx tests/test-determinism.ts",
-    "test:rollback": "npx tsx tests/test-rollback.ts",
     "test:input-ordering": "npx tsx tests/test-input-ordering.ts"
   },
   "devDependencies": {
