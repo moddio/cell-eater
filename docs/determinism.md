@@ -309,18 +309,56 @@ Modu.enableDebugUI(game);
 ```
 
 The debug overlay shows:
-- **Current hash** vs **Received hash** - should match across clients
-- **Last Sync %** - shows how many fields match (100% = no desync)
-- **Drifting fields** - highlights exactly which fields are diverging
+- **Hash** - Your local state hash (should match other clients)
+- **Sync %** - Rolling percentage of hash checks that passed (100% = in sync)
+- **Status indicators**:
+  - `active` (green) - Sending state hashes, no issues
+  - `100%` (green) - All recent hash checks passed
+  - `DESYNCED` (red) - Hash mismatch detected
+  - `resyncing...` (orange) - Waiting for recovery snapshot
 
 It also enables the determinism guard which warns about dangerous function calls.
 
+### Automatic Desync Recovery
+
+When a desync is detected:
+
+1. **Detection**: Your hash doesn't match the majority hash from server
+2. **Console output**: Detailed diagnosis showing which entities/fields diverged
+3. **Recovery**: Full snapshot requested and applied automatically
+
+Example console output on desync:
+```
+[state-sync] DESYNC DETECTED at frame 1234
+  Local hash:    a1b2c3d4
+  Majority hash: e5f6a7b8
+  Requesting resync from authority...
+
+[state-sync] === DESYNC DIAGNOSIS ===
+  DIVERGENT FIELDS: 2 differences found
+  Sync: 99.5% (198/199 fields match)
+
+  Player#1a [owner: abc12345]:
+    Body2D.x: local=150.5 server=152.3 (Δ -1.8000)
+    Body2D.y: local=200.1 server=198.7 (Δ 1.4000)
+
+  RECENT INPUTS (last 10):
+    f1230 [abc12345]: {"type":"move","x":1,"y":0}
+    ...
+
+[state-sync] Hard recovery successful - hashes now match
+```
+
 ### Identify Drifting Fields
 
+Check the sync stats programmatically:
+
 ```javascript
-const stats = game.getDriftStats();
-console.log('Drifting:', stats.lastDriftedFields);
-// ['player.Transform2D.x', 'player.Transform2D.y']
+const stats = game.getSyncStats();
+console.log('Sync:', stats.syncPercent + '%');
+console.log('Checks passed:', stats.passed);
+console.log('Checks failed:', stats.failed);
+console.log('Is desynced:', stats.isDesynced);
 ```
 
 Common patterns:

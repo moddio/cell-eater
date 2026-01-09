@@ -3614,6 +3614,15 @@ var Game = class {
     this.deltaBytesThisSecond = 0;
     this.deltaBytesPerSecond = 0;
     this.deltaBytesSampleTime = 0;
+    /** Desync tracking for hash-based sync */
+    this.isDesynced = false;
+    this.desyncFrame = 0;
+    this.desyncLocalHash = 0;
+    this.desyncMajorityHash = 0;
+    this.resyncPending = false;
+    /** Hash comparison stats (rolling window) */
+    this.hashChecksPassed = 0;
+    this.hashChecksFailed = 0;
     // ==========================================
     // String Interning
     // ==========================================
@@ -3902,6 +3911,11 @@ var Game = class {
           this.handleMajorityHash(frame, hash);
         };
       }
+      if (this.connection.onResyncSnapshot !== void 0) {
+        this.connection.onResyncSnapshot = (data, frame) => {
+          this.handleResyncSnapshot(data, frame);
+        };
+      }
     } catch (err) {
       console.warn("[ecs] Connection failed:", err?.message || err);
       this.connection = null;
@@ -3923,9 +3937,214 @@ var Game = class {
    */
   handleMajorityHash(frame, majorityHash) {
     const localHash = this.world.getStateHash();
-    if (localHash !== majorityHash) {
-      console.warn(`[state-sync] Hash mismatch at frame ${frame}: local=${localHash.toString(16)} majority=${majorityHash.toString(16)}`);
+    if (localHash === majorityHash) {
+      this.hashChecksPassed++;
+      if (this.isDesynced && !this.resyncPending) {
+        console.log(`[state-sync] Recovered from desync at frame ${frame}`);
+        this.isDesynced = false;
+      }
+    } else {
+      this.hashChecksFailed++;
+      if (!this.resyncPending) {
+        this.isDesynced = true;
+        this.desyncFrame = frame;
+        this.desyncLocalHash = localHash;
+        this.desyncMajorityHash = majorityHash;
+        console.error(`[state-sync] DESYNC DETECTED at frame ${frame}`);
+        console.error(`  Local hash:    ${localHash.toString(16).padStart(8, "0")}`);
+        console.error(`  Majority hash: ${majorityHash.toString(16).padStart(8, "0")}`);
+        console.error(`  Requesting resync from authority...`);
+        if (this.connection?.requestResync) {
+          this.resyncPending = true;
+          this.connection.requestResync();
+        } else {
+          console.warn(`[state-sync] Cannot request resync - SDK does not support requestResync()`);
+        }
+      }
     }
+  }
+  /**
+   * Handle resync snapshot from authority (hard recovery after desync).
+   * This compares state, logs detailed diff, then replaces local state.
+   */
+  handleResyncSnapshot(data, serverFrame) {
+    console.log(`[state-sync] Received resync snapshot (${data.length} bytes) for frame ${serverFrame}`);
+    let snapshot;
+    try {
+      const decoded = decode(data);
+      snapshot = decoded?.snapshot;
+      if (!snapshot) {
+        console.error(`[state-sync] Failed to decode resync snapshot - no snapshot data`);
+        this.resyncPending = false;
+        return;
+      }
+    } catch (e) {
+      console.error(`[state-sync] Failed to decode resync snapshot:`, e);
+      this.resyncPending = false;
+      return;
+    }
+    console.error(`[state-sync] === DESYNC DIAGNOSIS ===`);
+    console.error(`  Desync detected at frame: ${this.desyncFrame}`);
+    console.error(`  Resync snapshot frame: ${serverFrame}`);
+    console.error(`  Local hash at desync:    ${this.desyncLocalHash.toString(16).padStart(8, "0")}`);
+    console.error(`  Majority hash at desync: ${this.desyncMajorityHash.toString(16).padStart(8, "0")}`);
+    this.logDesyncDiff(snapshot, serverFrame);
+    console.log(`[state-sync] Performing hard recovery...`);
+    const preResyncFrame = this.currentFrame;
+    this.loadNetworkSnapshot(snapshot);
+    this.currentFrame = serverFrame;
+    this.resyncPending = false;
+    this.isDesynced = false;
+    const newLocalHash = this.world.getStateHash();
+    const serverHash = snapshot.hash;
+    if (newLocalHash === serverHash) {
+      console.log(`[state-sync] Hard recovery successful - hashes now match`);
+      console.log(`  New local hash: ${newLocalHash.toString(16).padStart(8, "0")}`);
+    } else {
+      console.error(`[state-sync] Hard recovery may have issues - hash mismatch after resync!`);
+      console.error(`  Expected: ${serverHash?.toString(16).padStart(8, "0")}`);
+      console.error(`  Got:      ${newLocalHash.toString(16).padStart(8, "0")}`);
+    }
+    this.lastGoodSnapshot = {
+      snapshot: JSON.parse(JSON.stringify(snapshot)),
+      frame: serverFrame,
+      hash: newLocalHash
+    };
+    console.log(`[state-sync] === END RESYNC ===`);
+  }
+  /**
+   * Log detailed diff between local state and authority snapshot.
+   * Called during resync to help diagnose what went wrong.
+   */
+  logDesyncDiff(serverSnapshot, serverFrame) {
+    const lines = [];
+    const diffs = [];
+    const types = serverSnapshot.types || [];
+    const serverEntities = serverSnapshot.entities || [];
+    const schema = serverSnapshot.schema || [];
+    const serverEntityMap = /* @__PURE__ */ new Map();
+    for (const e of serverEntities) {
+      serverEntityMap.set(e[0], e);
+    }
+    let matchingFields = 0;
+    let totalFields = 0;
+    for (const entity of this.world.getAllEntities()) {
+      const eid = entity.eid;
+      const serverEntity = serverEntityMap.get(eid);
+      const index = eid & INDEX_MASK;
+      if (!serverEntity) {
+        for (const comp of entity.getComponents()) {
+          totalFields += comp.fieldNames.length;
+          for (const fieldName of comp.fieldNames) {
+            diffs.push({
+              entity: entity.type,
+              eid,
+              comp: comp.name,
+              field: fieldName,
+              local: "EXISTS",
+              server: "MISSING"
+            });
+          }
+        }
+        continue;
+      }
+      const [, typeIndex, serverValues] = serverEntity;
+      const typeSchema = schema[typeIndex];
+      if (!typeSchema)
+        continue;
+      let valueIdx = 0;
+      for (const [compName, fieldNames] of typeSchema) {
+        const localComp = entity.getComponents().find((c) => c.name === compName);
+        for (const fieldName of fieldNames) {
+          totalFields++;
+          const serverValue = serverValues[valueIdx++];
+          if (localComp) {
+            const localValue = localComp.storage.fields[fieldName][index];
+            const fieldDef = localComp.schema[fieldName];
+            let valuesMatch = false;
+            if (fieldDef?.type === "bool") {
+              const localBool = localValue !== 0;
+              const serverBool = serverValue !== 0 && serverValue !== false;
+              valuesMatch = localBool === serverBool;
+            } else {
+              valuesMatch = localValue === serverValue;
+            }
+            if (valuesMatch) {
+              matchingFields++;
+            } else {
+              diffs.push({
+                entity: entity.type,
+                eid,
+                comp: compName,
+                field: fieldName,
+                local: localValue,
+                server: serverValue
+              });
+            }
+          }
+        }
+      }
+    }
+    for (const [eid, serverEntity] of serverEntityMap) {
+      if (this.world.getEntity(eid) === null) {
+        const [, typeIndex, serverValues] = serverEntity;
+        const serverType = types[typeIndex] || `type${typeIndex}`;
+        totalFields += serverValues.length;
+        diffs.push({
+          entity: serverType,
+          eid,
+          comp: "*",
+          field: "*",
+          local: "MISSING",
+          server: "EXISTS"
+        });
+      }
+    }
+    const syncPercent = totalFields > 0 ? matchingFields / totalFields * 100 : 100;
+    lines.push(`DIVERGENT FIELDS: ${diffs.length} differences found`);
+    lines.push(`  Sync: ${syncPercent.toFixed(1)}% (${matchingFields}/${totalFields} fields match)`);
+    lines.push(``);
+    const entityOwners = /* @__PURE__ */ new Map();
+    for (const entity of this.world.getAllEntities()) {
+      if (entity.has(Player)) {
+        const playerData = entity.get(Player);
+        const ownerClientId = this.numToClientId.get(playerData.clientId);
+        if (ownerClientId) {
+          entityOwners.set(entity.eid, ownerClientId.slice(0, 8));
+        }
+      }
+    }
+    const diffsByEntity = /* @__PURE__ */ new Map();
+    for (const d of diffs) {
+      if (!diffsByEntity.has(d.eid)) {
+        diffsByEntity.set(d.eid, []);
+      }
+      diffsByEntity.get(d.eid).push(d);
+    }
+    for (const [eid, entityDiffs] of diffsByEntity) {
+      const first = entityDiffs[0];
+      const owner = entityOwners.get(eid);
+      const ownerStr = owner ? ` [owner: ${owner}]` : "";
+      lines.push(`  ${first.entity}#${eid.toString(16)}${ownerStr}:`);
+      for (const d of entityDiffs) {
+        const delta = typeof d.local === "number" && typeof d.server === "number" ? ` (\u0394 ${(d.local - d.server).toFixed(4)})` : "";
+        lines.push(`    ${d.comp}.${d.field}: local=${d.local} server=${d.server}${delta}`);
+      }
+    }
+    if (diffs.length === 0) {
+      lines.push(`  No field differences found (hash mismatch may be due to RNG or string state)`);
+    }
+    const recentInputCount = Math.min(this.recentInputs.length, 20);
+    if (recentInputCount > 0) {
+      lines.push(``);
+      lines.push(`RECENT INPUTS (last ${recentInputCount}):`);
+      const recent = this.recentInputs.slice(-recentInputCount);
+      for (const input of recent) {
+        const shortId = input.clientId.slice(0, 8);
+        lines.push(`  f${input.frame} [${shortId}]: ${JSON.stringify(input.data)}`);
+      }
+    }
+    console.error(lines.join("\n"));
   }
   /**
    * Handle initial connection (first join or late join).
@@ -4871,6 +5090,21 @@ var Game = class {
     return { ...this.driftStats };
   }
   /**
+   * Get hash-based sync stats (for debug UI).
+   * Returns the rolling percentage of hash checks that passed.
+   */
+  getSyncStats() {
+    const total = this.hashChecksPassed + this.hashChecksFailed;
+    const syncPercent = total > 0 ? this.hashChecksPassed / total * 100 : 100;
+    return {
+      syncPercent,
+      passed: this.hashChecksPassed,
+      failed: this.hashChecksFailed,
+      isDesynced: this.isDesynced,
+      resyncPending: this.resyncPending
+    };
+  }
+  /**
    * Attach a renderer.
    */
   setRenderer(renderer) {
@@ -5633,7 +5867,7 @@ function disableDeterminismGuard() {
 }
 
 // src/version.ts
-var ENGINE_VERSION = "e02003d";
+var ENGINE_VERSION = "8114b44";
 
 // src/plugins/debug-ui.ts
 var debugDiv = null;
@@ -5713,12 +5947,17 @@ function enableDebugUI(target, options = {}) {
     const upStr = formatBandwidth(up);
     const downStr = formatBandwidth(down);
     const deltaBw = eng.getDeltaBandwidth?.() || 0;
-    const driftStats = eng.getDriftStats?.() || { determinismPercent: 100, totalChecks: 0, matchingFieldCount: 0, totalFieldCount: 0 };
-    const detPct = (Math.floor(driftStats.determinismPercent * 10) / 10).toFixed(1);
-    const detColor = driftStats.determinismPercent === 100 ? "#0f0" : driftStats.determinismPercent >= 99 ? "#ff0" : "#f00";
+    const syncStats = eng.getSyncStats?.() || { syncPercent: 100, passed: 0, failed: 0, isDesynced: false, resyncPending: false };
+    const totalHashChecks = syncStats.passed + syncStats.failed;
     let syncStatus;
-    if (driftStats.totalChecks > 0) {
-      syncStatus = `<span style="color:${detColor}">${detPct}%</span> <span style="color:#888">(${driftStats.matchingFieldCount}/${driftStats.totalFieldCount})</span>`;
+    if (syncStats.resyncPending) {
+      syncStatus = '<span style="color:#f80">resyncing...</span>';
+    } else if (syncStats.isDesynced) {
+      syncStatus = '<span style="color:#f00">DESYNCED</span>';
+    } else if (totalHashChecks > 0) {
+      const syncPct = (Math.floor(syncStats.syncPercent * 10) / 10).toFixed(1);
+      const syncColor = syncStats.syncPercent === 100 ? "#0f0" : syncStats.syncPercent >= 99 ? "#ff0" : "#f00";
+      syncStatus = `<span style="color:${syncColor}">${syncPct}%</span> <span style="color:#888">(${totalHashChecks} checks)</span>`;
     } else if (deltaBw > 0) {
       syncStatus = '<span style="color:#0f0">active</span>';
     } else {

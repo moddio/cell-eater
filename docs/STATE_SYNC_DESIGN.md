@@ -13,6 +13,69 @@ A bandwidth-efficient, Byzantine-fault-tolerant state synchronization system for
 
 ---
 
+## Current Implementation Status
+
+The following simplified model is currently implemented:
+
+### What's Implemented ✅
+
+| Feature | Status | Description |
+|---------|--------|-------------|
+| State hashing | ✅ | xxHash32 of full world state each tick |
+| Hash broadcasting | ✅ | Clients send 9-byte STATE_HASH messages |
+| Majority hash | ✅ | Server computes and broadcasts majority hash |
+| Desync detection | ✅ | Client compares local hash to majority |
+| Hard recovery | ✅ | Full snapshot request + apply on desync |
+| Detailed diagnostics | ✅ | Field-by-field diff logging on desync |
+| Rolling sync stats | ✅ | Track % of hash checks that pass |
+| Debug UI integration | ✅ | Shows sync %, desynced/resyncing status |
+
+### Current Flow (Simplified)
+
+```
+Every tick:
+  ALL CLIENTS:
+    1. Apply inputs from server
+    2. Run deterministic simulation
+    3. Compute stateHash (4 bytes)
+    4. Send STATE_HASH to server
+
+  SERVER:
+    1. Collect stateHashes from all clients
+    2. Compute majority hash
+    3. Broadcast majorityHash in TICK message
+    4. Track which clients match/mismatch
+
+  IF CLIENT HASH != MAJORITY:
+    1. Client logs DESYNC DETECTED with hashes
+    2. Client calls connection.requestResync()
+    3. Server sends full snapshot to client
+    4. Client logs detailed field-by-field diff
+    5. Client applies snapshot (hard recovery)
+    6. Client verifies hash now matches
+```
+
+### Not Yet Implemented ❌
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Partition-based delta sync | ❌ | Design ready, not implemented |
+| Reliability scoring | ❌ | Scores tracked but not used for assignment |
+| Distributed partition sending | ❌ | All data from authority, not distributed |
+| Merkle tree divergence detection | ❌ | Uses full snapshot comparison instead |
+| Compression | ❌ | Raw binary for now |
+
+### Bandwidth (Current Implementation)
+
+| Direction | Per Client | Notes |
+|-----------|------------|-------|
+| Upload | ~180 bytes/sec | 9 bytes × 20 fps (STATE_HASH only) |
+| Download | ~2-4 KB/sec | TICK messages with inputs + majorityHash |
+
+This is significantly lower than the full distributed model since clients don't send partition data.
+
+---
+
 ## Protocol Summary
 
 ### Key Insight: Zero-Coordination Assignment

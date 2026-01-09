@@ -44,20 +44,20 @@ ROOM
   ID: my-game-room
   Players: 3
   Frame: 1234
-  URL: ws://localhost:8001/ws
 
-ME
-  Authority: Yes
-  Client: abc123def
+CLIENT
+  ID: abc123de
 
 ENGINE
+  Commit: e02003d
   FPS: 60 render, 20 tick
-  Net: 1.2 up, 3.5 down kB/s
+  Net: 1.2 kB/s up, 3.5 kB/s down
 
-SNAPSHOT
-  Current: a1b2c3d4
-  Received: a1b2c3d4 (5 ago)
-  Last Sync: 100% (250/250 fields)
+STATE SYNC
+  Hash: a1b2c3d4
+  Delta: 180 B/s
+  Sync: 100% (120 checks)
+  Entities: 15
 ```
 
 ### Section Reference
@@ -67,68 +67,87 @@ SNAPSHOT
 | **ROOM** | ID | Current room ID |
 | | Players | Number of connected clients |
 | | Frame | Current simulation frame number |
-| | URL | Connected WebSocket node URL |
-| **ME** | Authority | Whether this client sends snapshots |
-| | Client | Your client ID |
-| **ENGINE** | FPS | Render FPS and tick rate |
-| | Net | Upload/download bandwidth in kB/s |
-| **SNAPSHOT** | Current | Current local state hash |
-| | Received | Last received snapshot hash and frames ago |
-| | Last Sync | Determinism % (matching/total fields) |
+| **CLIENT** | ID | Your client ID (first 8 chars) |
+| **ENGINE** | Commit | Engine version/commit hash |
+| | FPS | Render FPS and tick rate |
+| | Net | Upload/download bandwidth |
+| **STATE SYNC** | Hash | Current local state hash (xxHash32) |
+| | Delta | State hash upload bandwidth |
+| | Sync | Rolling % of hash checks that passed |
+| | Entities | Number of entities in world |
 
 ## Understanding Sync Status
 
-The **SNAPSHOT** section is your primary tool for detecting desync:
+The **STATE SYNC** section shows consensus-based sync status:
 
 ```
-SNAPSHOT
-  Current: a1b2c3d4          ← Your local state hash
-  Received: a1b2c3d4 (5 ago) ← Authority's hash (should match!)
-  Last Sync: 100% (250/250)  ← Field-by-field match percentage
+STATE SYNC
+  Hash: a1b2c3d4              ← Your local state hash
+  Delta: 180 B/s              ← Bandwidth for hash uploads
+  Sync: 100% (120 checks)     ← Rolling hash match rate
+  Entities: 15
 ```
+
+### Sync Status Indicators
+
+| Status | Color | Meaning |
+|--------|-------|---------|
+| `active` | Green | Sending state hashes, awaiting first comparison |
+| `100% (N checks)` | Green | All recent hash checks matched majority |
+| `99.5% (N checks)` | Yellow | Some hash mismatches detected |
+| `DESYNCED` | Red | Hash doesn't match majority, recovery needed |
+| `resyncing...` | Orange | Waiting for recovery snapshot from server |
+| `-` | Gray | Not connected or sync not started |
 
 ### When Everything is Working
 
-- **Current** and **Received** hashes match
-- **Last Sync** shows 100%
-- All clients show the same hash at the same frame
+- **Sync** shows `100%` in green
+- All clients have the same **Hash** at the same frame
+- **Delta** shows consistent bandwidth (~180 B/s per client)
 
 ### When Desync Occurs
 
-- Hashes differ between clients
-- **Last Sync** drops below 100%
-- The debug UI highlights drifting fields in red
+- **Sync** drops below 100% or shows `DESYNCED`
+- Console logs detailed diagnosis (which entities/fields diverged)
+- Client automatically requests and applies recovery snapshot
 
 ## Debugging Desync
 
-When you see mismatched hashes, follow this workflow:
+When desync is detected, the engine automatically logs detailed diagnostics to the console:
 
-### Step 1: Check Last Sync Percentage
+### Automatic Console Diagnosis
 
 ```
-Last Sync: 98% (245/250 fields)
+[state-sync] DESYNC DETECTED at frame 1234
+  Local hash:    a1b2c3d4
+  Majority hash: e5f6a7b8
+  Requesting resync from authority...
+
+[state-sync] === DESYNC DIAGNOSIS ===
+  Desync detected at frame: 1234
+  Resync snapshot frame: 1240
+
+DIVERGENT FIELDS: 3 differences found
+  Sync: 98.8% (245/248 fields match)
+
+  Player#1a [owner: abc12345]:
+    Body2D.x: local=150.5 server=152.3 (Δ -1.8000)
+    Body2D.y: local=200.1 server=198.7 (Δ 1.4000)
+
+  Bullet#2f:
+    Transform2D.angle: local=45 server=44 (Δ 1.0000)
+
+RECENT INPUTS (last 10):
+  f1230 [abc12345]: {"type":"move","x":1,"y":0}
+  f1231 [abc12345]: {"type":"move","x":1,"y":0}
+  ...
+
+[state-sync] Hard recovery successful - hashes now match
 ```
 
-This tells you 5 fields are diverging. The lower the percentage, the more widespread the desync.
+### Finding the Root Cause
 
-### Step 2: Identify Drifting Fields
-
-Use `getDriftStats()` to see exactly which fields are drifting:
-
-```javascript
-const stats = game.getDriftStats();
-console.log('Drifting fields:', stats.lastDriftedFields);
-// ['player.Transform2D.x', 'player.Transform2D.y', 'bullet.Body2D.vx']
-```
-
-The field names tell you:
-- **Entity type** (player, bullet, etc.)
-- **Component** (Transform2D, Body2D, etc.)
-- **Field** (x, y, vx, etc.)
-
-### Step 3: Find the Root Cause
-
-Common patterns and their causes:
+Look at the divergent fields to identify the pattern:
 
 | Drifting Fields | Likely Cause |
 |----------------|--------------|
@@ -137,11 +156,12 @@ Common patterns and their causes:
 | Random entities missing | `Math.random()` in spawn logic |
 | Everything drifting | `Date.now()` or async operation in system |
 
-### Step 4: Fix and Verify
+### Verify the Fix
 
 After fixing, watch the debug UI:
-- **Last Sync** should return to 100%
-- Hashes should match across all clients
+- **Sync** should return to `100%`
+- No more desync messages in console
+- All clients show matching hashes
 
 ## Example: Debugging a Position Desync
 
@@ -177,22 +197,38 @@ Get the current state hash:
 
 ```javascript
 const hash = game.getStateHash();
-console.log('State hash:', hash);
+console.log('State hash:', hash.toString(16));  // e.g., "a1b2c3d4"
+```
+
+### `game.getSyncStats()`
+
+Get hash-based sync statistics:
+
+```javascript
+const stats = game.getSyncStats();
+console.log(stats);
+// {
+//   syncPercent: 100,       // Rolling % of hash checks that passed
+//   passed: 120,            // Number of passed hash checks
+//   failed: 0,              // Number of failed hash checks
+//   isDesynced: false,      // Currently in desynced state?
+//   resyncPending: false    // Waiting for recovery snapshot?
+// }
 ```
 
 ### `game.isAuthority()`
 
-Check if this client is the snapshot authority:
+Check if this client is the authority (provides snapshots for late joiners/recovery):
 
 ```javascript
 if (game.isAuthority()) {
-    console.log('This client sends snapshots to others');
+    console.log('This client is the authority');
 }
 ```
 
 ### `game.getDriftStats()`
 
-Get detailed drift statistics:
+Get detailed drift statistics (from last snapshot comparison):
 
 ```javascript
 const stats = game.getDriftStats();
@@ -201,9 +237,7 @@ console.log(stats);
 //   totalChecks: 50,
 //   matchingFieldCount: 245,
 //   totalFieldCount: 250,
-//   determinismPercent: 98,
-//   lastCheckFrame: 1000,
-//   lastDriftedFields: ['player.x', 'player.y']
+//   determinismPercent: 98
 // }
 ```
 

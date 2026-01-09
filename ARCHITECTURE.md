@@ -49,8 +49,12 @@ src/
 │   ├── vec.ts           # Vector operations
 │   └── random.ts        # Seeded PRNG
 │
-├── sync/                # Rollback netcode
-│   └── rollback.ts      # GGPO-style rollback
+├── hash/                # State hashing
+│   └── xxhash.ts        # xxHash32 for state verification
+│
+├── sync/                # State synchronization
+│   ├── state-delta.ts   # Delta computation & serialization
+│   └── partition.ts     # Partition assignment for distributed sync
 │
 └── codec/               # Binary encoding
     └── binary.ts        # Snapshot serialization
@@ -119,16 +123,37 @@ game.getEntityByClientId()  // O(1) player lookup
 
 ```
 1. Player input captured locally
-2. Applied immediately (prediction)
-3. Sent to server
-4. Server assigns sequence number, broadcasts
-5. All clients apply at same frame
-6. If misprediction: rollback + resimulate
+2. Sent to server
+3. Server assigns sequence number, broadcasts to all
+4. All clients apply inputs at same frame
+5. All clients compute identical state (deterministic simulation)
 ```
+
+### Consensus-Based State Sync
+
+Instead of rollback, the engine uses **hash-based consensus verification**:
+
+```
+Every tick:
+  Client → Server: stateHash (4 bytes)
+  Server: Computes majority hash from all clients
+  Server → Client: majorityHash (via TICK message)
+
+  If client hash != majority:
+    Client requests full state resync
+    Server sends snapshot from authority
+    Client applies snapshot (hard recovery)
+```
+
+**Key properties:**
+- No rollback simulation - clients trust determinism
+- No continuous snapshot broadcasting - only 9 bytes/tick upload per client
+- Desynced clients are detected immediately via hash mismatch
+- Hard recovery with detailed diagnostics when desync occurs
 
 ### Snapshots
 
-Used for late joiners only (not for sync correction):
+Used for **late joiners** and **desync recovery** only:
 
 ```typescript
 // Sparse snapshot format
@@ -140,13 +165,14 @@ Used for late joiners only (not for sync correction):
 }
 ```
 
-### Rollback
+### Desync Detection & Recovery
 
-GGPO-style predict-verify-rollback:
+When a client's hash doesn't match the majority:
 
-1. **Predict**: Apply local input immediately
-2. **Verify**: Compare hash when server confirms
-3. **Rollback**: If wrong, restore snapshot + resimulate
+1. **Detection**: Server broadcasts `majorityHash` with each TICK
+2. **Diagnosis**: Client logs detailed diff (which entities/fields diverged)
+3. **Recovery**: Client requests and applies full snapshot from authority
+4. **Verification**: Hash compared after recovery to confirm sync
 
 ## Plugins
 
@@ -178,7 +204,8 @@ Plugins extend Game via `game.addPlugin()`:
 | State storage | Components only | No external bags, everything typed and serializable |
 | Entity destruction | Immediate | Destroyed entities removed from indices same frame |
 | Render state | Separate `entity.render` | Client-only, never serialized |
-| Snapshot usage | Late joiners only | Trust determinism, don't correct drift |
+| Sync model | Hash consensus | Majority-based verification, no authority trust |
+| Desync handling | Hard recovery | Request full snapshot on hash mismatch |
 | Physics | Fixed-point | Cross-platform bit-exact determinism |
 
 ## Performance Considerations
