@@ -14,7 +14,6 @@ import { Player } from './components';
 import { encode, decode } from './codec';
 import { loadRandomState, saveRandomState } from './math/random';
 import { INDEX_MASK } from './core/constants';
-import { computePartitionAssignment, getClientPartitions, computeStateDelta, getPartition, computePartitionCount } from './sync';
 // Debug flag - set to false for production
 const DEBUG_NETWORK = false;
 // ==========================================
@@ -851,29 +850,41 @@ export class Game {
         const stateHash = this.world.getStateHash();
         this.connection.sendStateHash(frame, stateHash);
         this.deltaBytesThisSecond += 9;
-        // Check if this client is assigned to send partition data
+        // NOTE: Partition-based delta sync is NOT YET IMPLEMENTED.
+        // The current implementation uses hash-based consensus only.
+        // Clients send state hashes (9 bytes), server computes majority hash,
+        // desynced clients request full snapshot resync.
+        //
+        // TODO: Implement distributed partition sending when needed for bandwidth optimization.
+        // The code below is disabled until then.
+        /*
         if (this.activeClients.length > 0 && this.connection.clientId) {
             const entityCount = this.world.entityCount;
             const numPartitions = computePartitionCount(entityCount, this.activeClients.length);
-            // Compute partition assignment
-            const assignment = computePartitionAssignment(entityCount, this.activeClients, frame, this.reliabilityScores);
-            // Get partitions this client should send
+
+            const assignment = computePartitionAssignment(
+                entityCount,
+                this.activeClients,
+                frame,
+                this.reliabilityScores
+            );
+
             const myPartitions = getClientPartitions(assignment, this.connection.clientId);
+
             if (myPartitions.length > 0 && this.connection.sendPartitionData) {
-                // Compute delta from previous snapshot
                 const currentSnapshot = this.world.getSparseSnapshot();
                 const delta = computeStateDelta(this.prevSnapshot, currentSnapshot);
-                // Send each assigned partition
+
                 for (const partitionId of myPartitions) {
                     const partitionData = getPartition(delta, partitionId, numPartitions);
                     this.connection.sendPartitionData(frame, partitionId, partitionData);
-                    // Track bytes: 1 type + 4 frame + 1 partitionId + 2 len + data
                     this.deltaBytesThisSecond += 8 + partitionData.length;
                 }
-                // Store current snapshot as previous for next frame
+
                 this.prevSnapshot = currentSnapshot;
             }
         }
+        */
     }
     /**
      * Process a network input (join/leave/game).
