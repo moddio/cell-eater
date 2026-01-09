@@ -1,4 +1,4 @@
-/* Modu Engine - Built: 2026-01-06T23:21:39.824Z - Commit: bd14907 */
+/* Modu Engine - Built: 2026-01-08T18:00:57.861Z - Commit: c16da3d */
 // Modu Engine + Network SDK Combined Bundle
 "use strict";
 var moduNetwork = (() => {
@@ -675,9 +675,11 @@ var moduNetwork = (() => {
             if (!connected || !ws || ws.readyState !== 1) return;
             if (data instanceof Uint8Array || data instanceof ArrayBuffer) {
               const binary = data instanceof Uint8Array ? data : new Uint8Array(data);
-              const wrapper = new Uint8Array(1 + binary.length);
+              const wrapper = new Uint8Array(1 + 4 + binary.length);
+              const view = new DataView(wrapper.buffer);
               wrapper[0] = 32;
-              wrapper.set(binary, 1);
+              view.setUint32(1, currentFrame, true);
+              wrapper.set(binary, 5);
               bytesOut += wrapper.length;
               ws.send(wrapper);
               return;
@@ -2530,7 +2532,10 @@ var Modu = (() => {
         this.componentIndex.get(component)?.delete(eid);
       }
       if (clientId !== void 0) {
-        this.clientIdIndex.delete(clientId);
+        const indexedEid = this.clientIdIndex.get(clientId);
+        if (indexedEid === eid) {
+          this.clientIdIndex.delete(clientId);
+        }
       }
     }
     /**
@@ -4859,9 +4864,11 @@ var Modu = (() => {
         for (const input of inputs) {
           this.processAuthorityChainInput(input);
         }
+        const rngStateSnapshot = saveRandomState();
         if (this.callbacks.onSnapshot) {
           this.callbacks.onSnapshot(this.world.getAllEntities());
         }
+        loadRandomState(rngStateSnapshot);
         const snapshotSeq = snapshot.seq || 0;
         const pendingInputs = inputs.filter((i) => i.seq > snapshotSeq).sort((a, b) => a.seq - b.seq);
         const snapshotFrame = this.currentFrame;
@@ -4883,6 +4890,10 @@ var Modu = (() => {
         if (DEBUG_NETWORK)
           console.log("[ecs] First join: creating room");
         this.currentFrame = frame;
+        this.authorityClientId = clientId;
+        if (!this.connectedClients.includes(clientId)) {
+          this.connectedClients.push(clientId);
+        }
         this.callbacks.onRoomCreate?.();
         for (const input of inputs) {
           this.processInput(input);
@@ -4960,6 +4971,7 @@ var Modu = (() => {
         if (DEBUG_NETWORK) {
           console.log(`[ecs] Join: ${clientId.slice(0, 8)}, authority=${this.authorityClientId?.slice(0, 8)}`);
         }
+        const rngState = saveRandomState();
         if (this.clientsWithEntitiesFromSnapshot.has(clientId)) {
           if (DEBUG_NETWORK) {
             console.log(`[ecs] Skipping onConnect for ${clientId.slice(0, 8)} - already has entity from snapshot`);
@@ -4967,6 +4979,7 @@ var Modu = (() => {
         } else {
           this.callbacks.onConnect?.(clientId);
         }
+        loadRandomState(rngState);
         if (this.checkIsAuthority()) {
           this.pendingSnapshotUpload = true;
         }
@@ -4981,7 +4994,9 @@ var Modu = (() => {
         if (DEBUG_NETWORK) {
           console.log(`[ecs] Leave: ${clientId.slice(0, 8)}, new authority=${this.authorityClientId?.slice(0, 8)}`);
         }
+        const rngStateDisconnect = saveRandomState();
         this.callbacks.onDisconnect?.(clientId);
+        loadRandomState(rngStateDisconnect);
       } else if (data) {
         this.routeInputToEntity(clientId, data);
       }
@@ -4991,14 +5006,10 @@ var Modu = (() => {
      */
     routeInputToEntity(clientId, data) {
       const numId = this.internClientId(clientId);
-      const entity = this.world.getEntityByClientId(numId);
+      this.world.setInput(numId, data);
       if (DEBUG_NETWORK) {
+        const entity = this.world.getEntityByClientId(numId);
         console.log(`[ecs] routeInput: clientId=${clientId.slice(0, 8)}, numId=${numId}, entity=${entity?.eid || "null"}, data=${JSON.stringify(data)}`);
-      }
-      if (entity) {
-        this.world.setInput(numId, data);
-      } else if (DEBUG_NETWORK) {
-        console.log(`[ecs] WARNING: No entity for clientId ${clientId.slice(0, 8)} (numId=${numId})`);
       }
     }
     /**
@@ -5127,6 +5138,8 @@ var Modu = (() => {
       return {
         frame: this.currentFrame,
         seq: this.lastInputSeq,
+        postTick: true,
+        // Snapshot is taken after tick - late joiners should NOT re-run this frame
         format: 5,
         // Format 5: type-indexed compact encoding
         types,
@@ -6007,8 +6020,6 @@ var Modu = (() => {
       this.mouseButtons = /* @__PURE__ */ new Set();
       /** Send interval handle */
       this.sendInterval = null;
-      /** Last sent input (for deduplication) */
-      this.lastSentInput = "";
       this.game = game;
       if (typeof canvas === "string") {
         const el = document.querySelector(canvas);
@@ -6084,6 +6095,13 @@ var Modu = (() => {
       return this;
     }
     /**
+     * Check if a key is currently pressed.
+     * Games can use this in callback bindings for custom key mappings.
+     */
+    isKeyDown(key) {
+      return this.keysDown.has(key.toLowerCase());
+    }
+    /**
      * Get current value of an action.
      */
     get(name) {
@@ -6138,13 +6156,6 @@ var Modu = (() => {
           y += vec.y;
         }
       }
-      if (Math.abs(x) <= 1 && Math.abs(y) <= 1) {
-        const len = Math.sqrt(x * x + y * y);
-        if (len > 1) {
-          x /= len;
-          y /= len;
-        }
-      }
       return { x, y };
     }
     /**
@@ -6173,51 +6184,20 @@ var Modu = (() => {
       if (source === "mouse") {
         return { ...this.mousePos };
       }
-      if (source === "keys:wasd") {
-        return this.getWASD();
-      }
-      if (source === "keys:arrows") {
-        return this.getArrows();
-      }
-      if (source === "keys:wasd+arrows") {
-        const wasd = this.getWASD();
-        const arrows = this.getArrows();
-        return {
-          x: Math.max(-1, Math.min(1, wasd.x + arrows.x)),
-          y: Math.max(-1, Math.min(1, wasd.y + arrows.y))
-        };
-      }
       return null;
     }
     /**
-     * Get WASD direction.
+     * Get mouse position.
      */
-    getWASD() {
-      let x = 0, y = 0;
-      if (this.keysDown.has("a"))
-        x -= 1;
-      if (this.keysDown.has("d"))
-        x += 1;
-      if (this.keysDown.has("w"))
-        y -= 1;
-      if (this.keysDown.has("s"))
-        y += 1;
-      return { x, y };
+    getMousePos() {
+      return { ...this.mousePos };
     }
     /**
-     * Get arrow keys direction.
+     * Check if a mouse button is pressed.
+     * 0 = left, 1 = middle, 2 = right
      */
-    getArrows() {
-      let x = 0, y = 0;
-      if (this.keysDown.has("arrowleft"))
-        x -= 1;
-      if (this.keysDown.has("arrowright"))
-        x += 1;
-      if (this.keysDown.has("arrowup"))
-        y -= 1;
-      if (this.keysDown.has("arrowdown"))
-        y += 1;
-      return { x, y };
+    isMouseButtonDown(button) {
+      return this.mouseButtons.has(button);
     }
     /**
      * Set up event listeners.
@@ -6253,28 +6233,9 @@ var Modu = (() => {
       this.sendInterval = window.setInterval(() => {
         if (this.game.isConnected() && this.game.localClientId && this.actions.size > 0) {
           const input = this.getAll();
-          const inputStr = this.inputToString(input);
-          if (inputStr !== this.lastSentInput) {
-            this.lastSentInput = inputStr;
-            this.game.sendInput(input);
-          }
+          this.game.sendInput(input);
         }
       }, sendRate);
-    }
-    /**
-     * Convert input to string for comparison.
-     * Uses rounding for vectors to avoid sending tiny mouse movements.
-     */
-    inputToString(input) {
-      const normalized = {};
-      for (const [key, value] of Object.entries(input)) {
-        if (value && typeof value === "object" && "x" in value && "y" in value) {
-          normalized[key] = { x: Math.round(value.x / 10) * 10, y: Math.round(value.y / 10) * 10 };
-        } else {
-          normalized[key] = value;
-        }
-      }
-      return JSON.stringify(normalized);
     }
     /**
      * Stop the send loop.
@@ -6502,7 +6463,7 @@ var Modu = (() => {
   }
 
   // src/version.ts
-  var ENGINE_VERSION = "bd14907";
+  var ENGINE_VERSION = "c16da3d";
 
   // src/plugins/debug-ui.ts
   var debugDiv = null;

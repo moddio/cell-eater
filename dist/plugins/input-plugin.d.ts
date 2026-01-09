@@ -1,24 +1,37 @@
 /**
  * InputPlugin - Handles input collection and network sending
  *
- * Provides an action-based input system where:
- * - Game defines actions with default bindings
- * - Players can rebind actions to different keys
+ * Provides a key-agnostic input system where:
+ * - Games define actions with callback bindings
+ * - Raw input state is tracked (keys, mouse)
  * - Input is automatically sent to server at tick rate
  *
  * @example
  * const input = game.addPlugin(InputPlugin, canvas);
  *
- * input.action('move', { type: 'vector', bindings: ['keys:wasd+arrows'] });
- * input.action('boost', { type: 'button', bindings: ['key:shift'] });
- * input.action('target', { type: 'vector', bindings: ['mouse'] });
+ * // Movement with custom key mapping (game defines the keys)
+ * input.action('move', {
+ *     type: 'vector',
+ *     bindings: [() => {
+ *         let x = 0, y = 0;
+ *         if (input.isKeyDown('w')) y -= 1;
+ *         if (input.isKeyDown('s')) y += 1;
+ *         if (input.isKeyDown('a')) x -= 1;
+ *         if (input.isKeyDown('d')) x += 1;
+ *         return { x, y };
+ *     }]
+ * });
  *
- * // Player rebinds
- * input.rebind('boost', ['key:space']);
+ * // Button action
+ * input.action('shoot', {
+ *     type: 'button',
+ *     bindings: [() => input.isMouseButtonDown(0)]
+ * });
  *
- * // Save/load
- * localStorage.setItem('keybinds', JSON.stringify(input.getBindings()));
- * input.loadBindings(JSON.parse(localStorage.getItem('keybinds')));
+ * // Raw state access
+ * input.isKeyDown('space')     // Check any key
+ * input.isMouseButtonDown(0)   // 0=left, 1=middle, 2=right
+ * input.getMousePos()          // { x, y } screen coords
  */
 import { Game } from '../game';
 /** Action types */
@@ -51,8 +64,6 @@ export declare class InputPlugin {
     private mouseButtons;
     /** Send interval handle */
     private sendInterval;
-    /** Last sent input (for deduplication) */
-    private lastSentInput;
     constructor(game: Game, canvas: HTMLCanvasElement | string);
     /**
      * Define an action with default bindings.
@@ -80,6 +91,11 @@ export declare class InputPlugin {
      */
     loadBindings(data: Record<string, string[]>): this;
     /**
+     * Check if a key is currently pressed.
+     * Games can use this in callback bindings for custom key mappings.
+     */
+    isKeyDown(key: string): boolean;
+    /**
      * Get current value of an action.
      */
     get(name: string): boolean | Vec2 | null;
@@ -104,13 +120,14 @@ export declare class InputPlugin {
      */
     private resolveStringVector;
     /**
-     * Get WASD direction.
+     * Get mouse position.
      */
-    private getWASD;
+    getMousePos(): Vec2;
     /**
-     * Get arrow keys direction.
+     * Check if a mouse button is pressed.
+     * 0 = left, 1 = middle, 2 = right
      */
-    private getArrows;
+    isMouseButtonDown(button: number): boolean;
     /**
      * Set up event listeners.
      */
@@ -119,11 +136,6 @@ export declare class InputPlugin {
      * Start the send loop.
      */
     private startSendLoop;
-    /**
-     * Convert input to string for comparison.
-     * Uses rounding for vectors to avoid sending tiny mouse movements.
-     */
-    private inputToString;
     /**
      * Stop the send loop.
      */

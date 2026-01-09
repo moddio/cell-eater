@@ -128,7 +128,10 @@ export class QueryEngine {
         }
         // Remove from clientId index
         if (clientId !== undefined) {
-            this.clientIdIndex.delete(clientId);
+            const indexedEid = this.clientIdIndex.get(clientId);
+            if (indexedEid === eid) {
+                this.clientIdIndex.delete(clientId);
+            }
         }
     }
     /**

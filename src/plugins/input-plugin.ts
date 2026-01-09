@@ -1,24 +1,37 @@
 /**
  * InputPlugin - Handles input collection and network sending
  *
- * Provides an action-based input system where:
- * - Game defines actions with default bindings
- * - Players can rebind actions to different keys
+ * Provides a key-agnostic input system where:
+ * - Games define actions with callback bindings
+ * - Raw input state is tracked (keys, mouse)
  * - Input is automatically sent to server at tick rate
  *
  * @example
  * const input = game.addPlugin(InputPlugin, canvas);
  *
- * input.action('move', { type: 'vector', bindings: ['keys:wasd+arrows'] });
- * input.action('boost', { type: 'button', bindings: ['key:shift'] });
- * input.action('target', { type: 'vector', bindings: ['mouse'] });
+ * // Movement with custom key mapping (game defines the keys)
+ * input.action('move', {
+ *     type: 'vector',
+ *     bindings: [() => {
+ *         let x = 0, y = 0;
+ *         if (input.isKeyDown('w')) y -= 1;
+ *         if (input.isKeyDown('s')) y += 1;
+ *         if (input.isKeyDown('a')) x -= 1;
+ *         if (input.isKeyDown('d')) x += 1;
+ *         return { x, y };
+ *     }]
+ * });
  *
- * // Player rebinds
- * input.rebind('boost', ['key:space']);
+ * // Button action
+ * input.action('shoot', {
+ *     type: 'button',
+ *     bindings: [() => input.isMouseButtonDown(0)]
+ * });
  *
- * // Save/load
- * localStorage.setItem('keybinds', JSON.stringify(input.getBindings()));
- * input.loadBindings(JSON.parse(localStorage.getItem('keybinds')));
+ * // Raw state access
+ * input.isKeyDown('space')     // Check any key
+ * input.isMouseButtonDown(0)   // 0=left, 1=middle, 2=right
+ * input.getMousePos()          // { x, y } screen coords
  */
 
 import { Game } from '../game';
@@ -69,9 +82,6 @@ export class InputPlugin {
 
     /** Send interval handle */
     private sendInterval: number | null = null;
-
-    /** Last sent input (for deduplication) */
-    private lastSentInput: string = '';
 
     constructor(game: Game, canvas: HTMLCanvasElement | string) {
         this.game = game;
@@ -159,6 +169,14 @@ export class InputPlugin {
     }
 
     /**
+     * Check if a key is currently pressed.
+     * Games can use this in callback bindings for custom key mappings.
+     */
+    isKeyDown(key: string): boolean {
+        return this.keysDown.has(key.toLowerCase());
+    }
+
+    /**
      * Get current value of an action.
      */
     get(name: string): boolean | Vec2 | null {
@@ -219,16 +237,8 @@ export class InputPlugin {
             }
         }
 
-        // Clamp to -1..1 for direction vectors, but not for mouse position
-        // We detect mouse by checking if values are large
-        if (Math.abs(x) <= 1 && Math.abs(y) <= 1) {
-            const len = Math.sqrt(x * x + y * y);
-            if (len > 1) {
-                x /= len;
-                y /= len;
-            }
-        }
-
+        // Don't normalize here - games handle diagonal speed with integer math
+        // to maintain determinism across clients
         return { x, y };
     }
 
@@ -262,51 +272,22 @@ export class InputPlugin {
             return { ...this.mousePos };
         }
 
-        // keys:wasd
-        if (source === 'keys:wasd') {
-            return this.getWASD();
-        }
-
-        // keys:arrows
-        if (source === 'keys:arrows') {
-            return this.getArrows();
-        }
-
-        // keys:wasd+arrows
-        if (source === 'keys:wasd+arrows') {
-            const wasd = this.getWASD();
-            const arrows = this.getArrows();
-            return {
-                x: Math.max(-1, Math.min(1, wasd.x + arrows.x)),
-                y: Math.max(-1, Math.min(1, wasd.y + arrows.y))
-            };
-        }
-
         return null;
     }
 
     /**
-     * Get WASD direction.
+     * Get mouse position.
      */
-    private getWASD(): Vec2 {
-        let x = 0, y = 0;
-        if (this.keysDown.has('a')) x -= 1;
-        if (this.keysDown.has('d')) x += 1;
-        if (this.keysDown.has('w')) y -= 1;
-        if (this.keysDown.has('s')) y += 1;
-        return { x, y };
+    getMousePos(): Vec2 {
+        return { ...this.mousePos };
     }
 
     /**
-     * Get arrow keys direction.
+     * Check if a mouse button is pressed.
+     * 0 = left, 1 = middle, 2 = right
      */
-    private getArrows(): Vec2 {
-        let x = 0, y = 0;
-        if (this.keysDown.has('arrowleft')) x -= 1;
-        if (this.keysDown.has('arrowright')) x += 1;
-        if (this.keysDown.has('arrowup')) y -= 1;
-        if (this.keysDown.has('arrowdown')) y += 1;
-        return { x, y };
+    isMouseButtonDown(button: number): boolean {
+        return this.mouseButtons.has(button);
     }
 
     /**
@@ -355,31 +336,10 @@ export class InputPlugin {
         this.sendInterval = window.setInterval(() => {
             if (this.game.isConnected() && this.game.localClientId && this.actions.size > 0) {
                 const input = this.getAll();
-                // Only send if input changed (deduplication to save bandwidth)
-                const inputStr = this.inputToString(input);
-                if (inputStr !== this.lastSentInput) {
-                    this.lastSentInput = inputStr;
-                    this.game.sendInput(input);
-                }
+                // Send input every tick - deterministic networking requires continuous input
+                this.game.sendInput(input);
             }
         }, sendRate);
-    }
-
-    /**
-     * Convert input to string for comparison.
-     * Uses rounding for vectors to avoid sending tiny mouse movements.
-     */
-    private inputToString(input: Record<string, any>): string {
-        const normalized: Record<string, any> = {};
-        for (const [key, value] of Object.entries(input)) {
-            if (value && typeof value === 'object' && 'x' in value && 'y' in value) {
-                // Round vectors to avoid sending tiny movements
-                normalized[key] = { x: Math.round(value.x / 10) * 10, y: Math.round(value.y / 10) * 10 };
-            } else {
-                normalized[key] = value;
-            }
-        }
-        return JSON.stringify(normalized);
     }
 
     /**
