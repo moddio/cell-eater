@@ -10,6 +10,7 @@ import { SparseSnapshot, EntityMeta } from '../core/snapshot';
 import { getAllComponents } from '../core/component';
 import { INDEX_MASK } from '../core/constants';
 
+
 /**
  * Represents changes between two world states.
  */
@@ -137,33 +138,8 @@ export function computeStateDelta(
         clientId: meta.clientId,
         components: currentData
       });
-    } else {
-      // Existing entity - check for changes
-      const prevData = prevComponentData.get(eid)!;
-      const changes: Record<string, Record<string, number>> = {};
-      let hasChanges = false;
-
-      for (const [compName, currentFields] of Object.entries(currentData)) {
-        const prevFields = prevData[compName] || {};
-        const fieldChanges: Record<string, number> = {};
-
-        for (const [fieldName, currentValue] of Object.entries(currentFields)) {
-          const prevValue = prevFields[fieldName];
-          if (prevValue !== currentValue) {
-            fieldChanges[fieldName] = currentValue;
-            hasChanges = true;
-          }
-        }
-
-        if (Object.keys(fieldChanges).length > 0) {
-          changes[compName] = fieldChanges;
-        }
-      }
-
-      if (hasChanges) {
-        updated.push({ eid, changes });
-      }
     }
+    // No field updates tracked - simulation is deterministic, all clients compute same values
   }
 
   // Find deleted entities
