@@ -1716,12 +1716,9 @@ var SparseSnapshotCodec = class {
    * Encode world state to sparse snapshot.
    */
   encode(activeEids, getEntityType, getEntityClientId, getComponentsForEntity, allocatorState, stringsState, frame = 0, seq = 0, rng) {
-    const entityMask = new Uint32Array(Math.ceil(MAX_ENTITIES / 32));
     const entityMeta = [];
     const sortedEids = [...activeEids].sort((a, b) => a - b);
     for (const eid of sortedEids) {
-      const index = eid & INDEX_MASK;
-      entityMask[index >>> 5] |= 1 << (index & 31);
       entityMeta.push({
         eid,
         type: getEntityType(eid),
@@ -1762,7 +1759,6 @@ var SparseSnapshotCodec = class {
     return {
       frame,
       seq,
-      entityMask,
       entityMeta,
       componentData,
       entityCount: sortedEids.length,
@@ -1812,7 +1808,6 @@ var SparseSnapshotCodec = class {
    */
   getSize(snapshot) {
     let size = 0;
-    size += snapshot.entityMask.byteLength;
     size += snapshot.entityMeta.length * 32;
     for (const buffer of snapshot.componentData.values()) {
       size += buffer.byteLength;
@@ -1837,12 +1832,10 @@ var SparseSnapshotCodec = class {
     const metaBytes = new TextEncoder().encode(metaJson);
     const metaLength = metaBytes.length;
     let componentDataSize = 0;
-    const componentSizes = [];
     for (const buffer2 of snapshot.componentData.values()) {
-      componentSizes.push(buffer2.byteLength);
       componentDataSize += buffer2.byteLength;
     }
-    const totalSize = 4 + metaLength + 4 + snapshot.entityMask.byteLength + componentDataSize;
+    const totalSize = 4 + metaLength + componentDataSize;
     const buffer = new ArrayBuffer(totalSize);
     const view = new DataView(buffer);
     let offset = 0;
@@ -1850,12 +1843,6 @@ var SparseSnapshotCodec = class {
     offset += 4;
     new Uint8Array(buffer, offset, metaLength).set(metaBytes);
     offset += metaLength;
-    view.setUint32(offset, snapshot.entityMask.byteLength, true);
-    offset += 4;
-    new Uint8Array(buffer, offset, snapshot.entityMask.byteLength).set(
-      new Uint8Array(snapshot.entityMask.buffer)
-    );
-    offset += snapshot.entityMask.byteLength;
     for (const compBuffer of snapshot.componentData.values()) {
       new Uint8Array(buffer, offset, compBuffer.byteLength).set(
         new Uint8Array(compBuffer)
@@ -1876,12 +1863,6 @@ var SparseSnapshotCodec = class {
     const metaJson = new TextDecoder().decode(metaBytes);
     const meta = JSON.parse(metaJson);
     offset += metaLength;
-    const maskLength = view.getUint32(offset, true);
-    offset += 4;
-    const entityMask = new Uint32Array(
-      buffer.slice(offset, offset + maskLength)
-    );
-    offset += maskLength;
     const componentData = /* @__PURE__ */ new Map();
     const allComponents = getAllComponents();
     for (const name of meta.componentNames) {
@@ -1900,7 +1881,6 @@ var SparseSnapshotCodec = class {
     return {
       frame: meta.frame,
       seq: meta.seq,
-      entityMask,
       entityMeta: meta.entityMeta,
       componentData,
       entityCount: meta.entityMeta.length,
@@ -3194,14 +3174,19 @@ function decode(data) {
 // src/sync/state-delta.ts
 function computeStateDelta(prevSnapshot, currentSnapshot) {
   const allComponents = getAllComponents();
-  const prevEntities = /* @__PURE__ */ new Map();
-  const prevComponentData = /* @__PURE__ */ new Map();
+  const prevEntityIds = /* @__PURE__ */ new Set();
   if (prevSnapshot) {
-    for (let i = 0; i < prevSnapshot.entityMeta.length; i++) {
-      const meta = prevSnapshot.entityMeta[i];
-      prevEntities.set(meta.eid, meta);
+    for (const meta of prevSnapshot.entityMeta) {
+      prevEntityIds.add(meta.eid);
+    }
+  }
+  const created = [];
+  const deleted = [];
+  for (let i = 0; i < currentSnapshot.entityMeta.length; i++) {
+    const meta = currentSnapshot.entityMeta[i];
+    if (!prevEntityIds.has(meta.eid)) {
       const entityData = {};
-      for (const [compName, buffer] of prevSnapshot.componentData) {
+      for (const [compName, buffer] of currentSnapshot.componentData) {
         const component = allComponents.get(compName);
         if (!component)
           continue;
@@ -3210,68 +3195,38 @@ function computeStateDelta(prevSnapshot, currentSnapshot) {
         for (const fieldName of component.fieldNames) {
           const arr = component.storage.fields[fieldName];
           const bytesPerElement = arr.BYTES_PER_ELEMENT;
-          const packedArr = new arr.constructor(buffer, offset, prevSnapshot.entityCount);
+          const packedArr = new arr.constructor(buffer, offset, currentSnapshot.entityCount);
           fields[fieldName] = packedArr[i];
-          offset += prevSnapshot.entityCount * bytesPerElement;
+          offset += currentSnapshot.entityCount * bytesPerElement;
         }
         entityData[compName] = fields;
       }
-      prevComponentData.set(meta.eid, entityData);
-    }
-  }
-  const currentEntities = /* @__PURE__ */ new Map();
-  const currentComponentData = /* @__PURE__ */ new Map();
-  for (let i = 0; i < currentSnapshot.entityMeta.length; i++) {
-    const meta = currentSnapshot.entityMeta[i];
-    currentEntities.set(meta.eid, meta);
-    const entityData = {};
-    for (const [compName, buffer] of currentSnapshot.componentData) {
-      const component = allComponents.get(compName);
-      if (!component)
-        continue;
-      const fields = {};
-      let offset = 0;
-      for (const fieldName of component.fieldNames) {
-        const arr = component.storage.fields[fieldName];
-        const bytesPerElement = arr.BYTES_PER_ELEMENT;
-        const packedArr = new arr.constructor(buffer, offset, currentSnapshot.entityCount);
-        fields[fieldName] = packedArr[i];
-        offset += currentSnapshot.entityCount * bytesPerElement;
-      }
-      entityData[compName] = fields;
-    }
-    currentComponentData.set(meta.eid, entityData);
-  }
-  const created = [];
-  const updated = [];
-  const deleted = [];
-  for (const [eid, meta] of currentEntities) {
-    const currentData = currentComponentData.get(eid);
-    if (!prevEntities.has(eid)) {
       created.push({
-        eid,
+        eid: meta.eid,
         type: meta.type,
         clientId: meta.clientId,
-        components: currentData
+        components: entityData
       });
     }
   }
   if (prevSnapshot) {
-    for (const [eid] of prevEntities) {
-      if (!currentEntities.has(eid)) {
-        deleted.push(eid);
+    const currentEntityIds = /* @__PURE__ */ new Set();
+    for (const meta of currentSnapshot.entityMeta) {
+      currentEntityIds.add(meta.eid);
+    }
+    for (const meta of prevSnapshot.entityMeta) {
+      if (!currentEntityIds.has(meta.eid)) {
+        deleted.push(meta.eid);
       }
     }
   }
   created.sort((a, b) => a.eid - b.eid);
-  updated.sort((a, b) => a.eid - b.eid);
   deleted.sort((a, b) => a - b);
   return {
     frame: currentSnapshot.frame,
     baseHash: prevSnapshot ? computeSnapshotHash(prevSnapshot) : 0,
     resultHash: computeSnapshotHash(currentSnapshot),
     created,
-    updated,
     deleted
   };
 }
@@ -3314,9 +3269,6 @@ function getPartition(delta, partitionId, numPartitions) {
   const partitionCreated = delta.created.filter(
     (e) => getEntityPartition(e.eid, numPartitions) === partitionId
   );
-  const partitionUpdated = delta.updated.filter(
-    (e) => getEntityPartition(e.eid, numPartitions) === partitionId
-  );
   const partitionDeleted = delta.deleted.filter(
     (eid) => getEntityPartition(eid, numPartitions) === partitionId
   );
@@ -3325,7 +3277,6 @@ function getPartition(delta, partitionId, numPartitions) {
     numPartitions,
     frame: delta.frame,
     created: partitionCreated,
-    updated: partitionUpdated,
     deleted: partitionDeleted
   };
   const json = JSON.stringify(partitionDelta);
@@ -3344,7 +3295,6 @@ function assemblePartitions(partitions) {
   if (partitions.length === 0)
     return null;
   const frame = partitions[0].frame;
-  const numPartitions = partitions[0].numPartitions;
   for (const p of partitions) {
     if (p.frame !== frame) {
       console.warn("Partition frame mismatch");
@@ -3352,15 +3302,12 @@ function assemblePartitions(partitions) {
     }
   }
   const created = [];
-  const updated = [];
   const deleted = [];
   for (const p of partitions) {
     created.push(...p.created);
-    updated.push(...p.updated);
     deleted.push(...p.deleted);
   }
   created.sort((a, b) => a.eid - b.eid);
-  updated.sort((a, b) => a.eid - b.eid);
   deleted.sort((a, b) => a - b);
   return {
     frame,
@@ -3369,38 +3316,29 @@ function assemblePartitions(partitions) {
     resultHash: 0,
     // Not known from partitions
     created,
-    updated,
     deleted
   };
 }
-function applyDelta(delta, createEntity, updateEntity, deleteEntity) {
+function applyDelta(delta, createEntity, deleteEntity) {
   for (const eid of delta.deleted) {
     deleteEntity(eid);
   }
   for (const entity of delta.created) {
     createEntity(entity.eid, entity.type, entity.clientId, entity.components);
   }
-  for (const entity of delta.updated) {
-    updateEntity(entity.eid, entity.changes);
-  }
   return {
     created: delta.created.map((e) => e.eid),
-    updated: delta.updated.map((e) => e.eid),
     deleted: delta.deleted
   };
 }
 function isDeltaEmpty(delta) {
-  return delta.created.length === 0 && delta.updated.length === 0 && delta.deleted.length === 0;
+  return delta.created.length === 0 && delta.deleted.length === 0;
 }
 function getDeltaSize(delta) {
   let size = 16;
   for (const entity of delta.created) {
     size += 12;
     size += JSON.stringify(entity.components).length;
-  }
-  for (const entity of delta.updated) {
-    size += 4;
-    size += JSON.stringify(entity.changes).length;
   }
   size += delta.deleted.length * 4;
   return size;
@@ -3562,8 +3500,6 @@ var Game = class {
     this.connectedRoomId = null;
     /** Local client ID (string form) */
     this.localClientIdStr = null;
-    /** All connected client IDs (in join order for determinism) */
-    this.connectedClients = [];
     /** Authority client (first joiner, sends snapshots) */
     this.authorityClientId = null;
     /** Current server frame */
@@ -3578,6 +3514,10 @@ var Game = class {
     this.gameLoop = null;
     /** Deferred snapshot flag (send after tick completes) */
     this.pendingSnapshotUpload = false;
+    /** Flag: local room was created before server connected (for local-first) */
+    this.localRoomCreated = false;
+    /** Flag: game has been started (via start() or connect()) */
+    this.gameStarted = false;
     /** Last snapshot info for debug UI */
     this.lastSnapshotHash = null;
     this.lastSnapshotFrame = 0;
@@ -3629,9 +3569,10 @@ var Game = class {
     /** Hash comparison stats (rolling window) */
     this.hashChecksPassed = 0;
     this.hashChecksFailed = 0;
-    /** Previous frame's state hash (for desync comparison) */
-    this.prevStateHash = 0;
-    this.prevStateHashFrame = -1;
+    /** State hash history for desync comparison (frame -> hash) */
+    this.stateHashHistory = /* @__PURE__ */ new Map();
+    this.HASH_HISTORY_SIZE = 10;
+    // Keep last 10 frames of hashes
     // ==========================================
     // String Interning
     // ==========================================
@@ -3866,33 +3807,139 @@ var Game = class {
     this.world.reset();
     this.currentFrame = 0;
   }
+  /**
+   * Configure the game with callbacks.
+   *
+   * This method stores callbacks but does NOT start the game.
+   * Use this when you want to configure callbacks separately from starting.
+   *
+   * @example
+   * game.init({
+   *     onRoomCreate() { spawnFood(); },
+   *     onConnect(clientId) { spawnPlayer(clientId); }
+   * });
+   * game.start();  // Start locally
+   * // Later...
+   * game.connect(roomId);  // Connect to server
+   *
+   * @param callbacks Game lifecycle callbacks
+   * @returns The game instance for chaining
+   */
+  init(callbacks) {
+    this.callbacks = { ...this.callbacks, ...callbacks };
+    return this;
+  }
+  /**
+   * Start the game locally (offline mode).
+   *
+   * Use this for single-player or when you want to start the game
+   * before connecting to a server. The game will simulate locally
+   * at the configured tick rate.
+   *
+   * If you later call connect(), the local state will be REPLACED
+   * by the server state (clean handoff, no merge).
+   *
+   * @param callbacks Optional callbacks (onTick, render, etc.). If provided,
+   *                  these are merged with any callbacks set via init().
+   */
+  start(callbacks = {}) {
+    this.callbacks = { ...this.callbacks, ...callbacks };
+    const localClientId = "local-" + Math.random().toString(36).substring(2, 10);
+    this.localClientIdStr = localClientId;
+    if (this.callbacks.onRoomCreate) {
+      this.callbacks.onRoomCreate();
+    }
+    this.localRoomCreated = true;
+    if (this.callbacks.onConnect) {
+      this.callbacks.onConnect(localClientId);
+    }
+    this.startGameLoop();
+    this.gameStarted = true;
+    console.log("[ecs] Started in local/offline mode with clientId:", localClientId);
+  }
   // ==========================================
   // Network Connection
   // ==========================================
   /**
    * Connect to a multiplayer room.
+   *
+   * Can be called in several ways:
+   *
+   * **Mode 1: Online-only (callbacks in connect)**
+   * ```js
+   * game.connect(roomId, {
+   *     onRoomCreate() { spawnFood(); },
+   *     onConnect(clientId) { spawnPlayer(clientId); }
+   * });
+   * ```
+   * This auto-starts locally, then connects to server.
+   *
+   * **Mode 2: Local-first with seamless transition**
+   * ```js
+   * game.init({ onRoomCreate, onConnect });
+   * game.start();  // Play locally immediately
+   * game.connect(roomId);  // Server state replaces local state
+   * ```
+   *
+   * **Mode 3: Using options parameter**
+   * ```js
+   * game.connect(roomId, { onRoomCreate, onConnect }, { nodeUrl: '...' });
+   * ```
+   *
+   * When called after start(), the local state is FLUSHED and REPLACED with server state.
+   * This is a clean handoff - no state merging.
+   *
+   * @param roomId The room to connect to
+   * @param callbacksOrOptions Either GameCallbacks or ConnectOptions
+   * @param options ConnectOptions (only if second param is callbacks)
    */
-  async connect(roomId, callbacks, options = {}) {
-    this.callbacks = callbacks;
+  async connect(roomId, callbacksOrOptions, options) {
+    let callbacks = {};
+    let connectOptions = {};
+    if (callbacksOrOptions) {
+      const isConnectOptions = "nodeUrl" in callbacksOrOptions || "centralServiceUrl" in callbacksOrOptions || "joinToken" in callbacksOrOptions;
+      if (isConnectOptions) {
+        connectOptions = callbacksOrOptions;
+      } else {
+        callbacks = callbacksOrOptions;
+        connectOptions = options || {};
+      }
+    }
+    this.callbacks = { ...this.callbacks, ...callbacks };
     if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
       if (params.get("room"))
         roomId = params.get("room");
       if (params.get("nodeUrl"))
-        options.nodeUrl = params.get("nodeUrl");
+        connectOptions.nodeUrl = params.get("nodeUrl");
     }
     this.connectedRoomId = roomId;
-    const network = window.moduNetwork;
-    if (!network) {
-      throw new Error("moduNetwork not found. Include modu-network SDK before calling connect().");
+    const wasStartedLocally = this.gameStarted;
+    if (wasStartedLocally) {
+      console.log(`[ecs] Connecting to room "${roomId}"... (local game will be replaced with server state)`);
+    } else {
+      console.log(`[ecs] Starting game locally, connecting to room "${roomId}" in background...`);
+      const localClientId = "local-" + Math.random().toString(36).substring(2, 10);
+      this.localClientIdStr = localClientId;
+      if (this.callbacks.onRoomCreate) {
+        this.callbacks.onRoomCreate();
+        this.localRoomCreated = true;
+      }
+      this.gameStarted = true;
     }
-    console.log(`[ecs] Connecting to room "${roomId}"...`);
+    this.startGameLoop();
+    const network = typeof window !== "undefined" ? window.moduNetwork : void 0;
+    if (!network) {
+      console.warn("[ecs] moduNetwork not found - running in offline mode");
+      return;
+    }
+    const connectStartTime = typeof performance !== "undefined" ? performance.now() : Date.now();
     try {
       this.connection = await network.connect(roomId, {
-        nodeUrl: options.nodeUrl,
-        centralServiceUrl: options.centralServiceUrl,
+        nodeUrl: connectOptions.nodeUrl,
+        centralServiceUrl: connectOptions.centralServiceUrl,
         appId: "dev",
-        joinToken: options.joinToken,
+        joinToken: connectOptions.joinToken,
         onConnect: (snapshot, inputs, frame, nodeUrl, fps, clientId) => {
           this.handleConnect(snapshot, inputs, frame, fps, clientId);
         },
@@ -3909,6 +3956,8 @@ var Game = class {
           console.error("[ecs] Network error:", error);
         }
       });
+      const connectDuration = (typeof performance !== "undefined" ? performance.now() : Date.now()) - connectStartTime;
+      console.log(`[ecs] Connected successfully in ${connectDuration.toFixed(0)}ms, clientId: ${this.connection.clientId}`);
       this.localClientIdStr = this.connection.clientId;
       if (this.connection.onReliabilityUpdate !== void 0) {
         this.connection.onReliabilityUpdate = (scores, version) => {
@@ -3926,7 +3975,9 @@ var Game = class {
         };
       }
     } catch (err) {
-      console.warn("[ecs] Connection failed:", err?.message || err);
+      const connectDuration = (typeof performance !== "undefined" ? performance.now() : Date.now()) - connectStartTime;
+      console.error(`[ecs] Connection failed after ${connectDuration.toFixed(0)}ms:`, err?.message || err);
+      console.error("[ecs] Make sure the server is running. Check: 1) Central service on port 9001, 2) Node server");
       this.connection = null;
       this.connectedRoomId = null;
     }
@@ -3945,16 +3996,16 @@ var Game = class {
    * Handle majority hash from server (for desync detection).
    */
   handleMajorityHash(frame, majorityHash) {
+    const localHash = this.stateHashHistory.get(frame);
     if (frame % 100 === 0) {
-      console.log(`[state-sync] frame=${frame} prevFrame=${this.prevStateHashFrame} localHash=${this.prevStateHash.toString(16)} majorityHash=${majorityHash.toString(16)}`);
+      console.log(`[state-sync] frame=${frame} localHash=${localHash?.toString(16) ?? "none"} majorityHash=${majorityHash.toString(16)}`);
     }
-    if (this.prevStateHashFrame !== frame) {
+    if (localHash === void 0) {
       if (frame % 100 === 0) {
-        console.log(`[state-sync] Skipping - frame mismatch: expected=${frame} got=${this.prevStateHashFrame}`);
+        console.warn(`[state-sync] No local hash for frame ${frame} (history has ${this.stateHashHistory.size} frames)`);
       }
       return;
     }
-    const localHash = this.prevStateHash;
     if (localHash === majorityHash) {
       this.hashChecksPassed++;
       if (this.isDesynced && !this.resyncPending) {
@@ -4024,6 +4075,8 @@ var Game = class {
       console.error(`  Got:      ${newLocalHash.toString(16).padStart(8, "0")}`);
     }
     this.prevSnapshot = this.world.getSparseSnapshot();
+    this.stateHashHistory.clear();
+    this.stateHashHistory.set(serverFrame, newLocalHash);
     this.lastGoodSnapshot = {
       snapshot: JSON.parse(JSON.stringify(snapshot)),
       frame: serverFrame,
@@ -4230,20 +4283,32 @@ var Game = class {
         frame: this.currentFrame,
         hash: this.getStateHash()
       };
-      console.log(`[ecs-debug] After catchup: activeClients=${this.activeClients.length} connectedClients=${this.connectedClients.length} entities=${this.world.entityCount} hash=${this.getStateHash()}`);
+      console.log(`[ecs-debug] After catchup: activeClients=${this.activeClients.length} entities=${this.world.entityCount} hash=${this.getStateHash()}`);
     } else {
       if (DEBUG_NETWORK)
         console.log("[ecs] First join: creating room");
       this.currentFrame = frame;
       this.authorityClientId = clientId;
-      if (!this.connectedClients.includes(clientId)) {
-        this.connectedClients.push(clientId);
-      }
       if (!this.activeClients.includes(clientId)) {
         this.activeClients.push(clientId);
         this.activeClients.sort();
       }
-      this.callbacks.onRoomCreate?.();
+      if (this.localRoomCreated) {
+        console.log("[ecs] Local-first handoff: flushing local state, recreating with server identity");
+        this.world.reset();
+        if (this.physics) {
+          this.physics.clear();
+        }
+        this.clientIdToNum.clear();
+        this.numToClientId.clear();
+        this.nextClientNum = 1;
+        this.activeClients = [clientId];
+        this.localRoomCreated = false;
+        this.callbacks.onRoomCreate?.();
+        this.localRoomCreated = true;
+      } else {
+        this.callbacks.onRoomCreate?.();
+      }
       for (const input of inputs) {
         this.processInput(input);
       }
@@ -4252,8 +4317,7 @@ var Game = class {
       this.sendSnapshot("init");
     }
     this.startGameLoop();
-    if (DEBUG_NETWORK)
-      console.log("[ecs] Game loop started");
+    console.log(`[ecs] Game loop started, waiting for server TICK messages...`);
   }
   /**
    * Handle server tick.
@@ -4283,7 +4347,10 @@ var Game = class {
     }
     this.lastTickTime = typeof performance !== "undefined" ? performance.now() : Date.now();
     if (majorityHash !== void 0 && majorityHash !== 0) {
-      this.handleMajorityHash(frame - 1, majorityHash);
+      const hashFrame = frame - 3;
+      this.handleMajorityHash(hashFrame, majorityHash);
+    } else if (this.activeClients.length > 1 && frame % 100 === 0) {
+      console.warn(`[state-sync] No majorityHash in tick ${frame} (expected with ${this.activeClients.length} clients)`);
     }
     this.sendStateSync(frame);
   }
@@ -4304,39 +4371,21 @@ var Game = class {
     const stateHash = this.world.getStateHash();
     this.connection.sendStateHash(frame, stateHash);
     this.deltaBytesThisSecond += 9;
-    this.prevStateHash = stateHash;
-    this.prevStateHashFrame = frame;
+    this.stateHashHistory.set(frame, stateHash);
+    if (this.stateHashHistory.size > this.HASH_HISTORY_SIZE) {
+      const oldestFrame = frame - this.HASH_HISTORY_SIZE;
+      for (const f of this.stateHashHistory.keys()) {
+        if (f <= oldestFrame) {
+          this.stateHashHistory.delete(f);
+        }
+      }
+    }
     const currentSnapshot = this.world.getSparseSnapshot();
     if (this.activeClients.length > 1 && this.connection.clientId && this.connection.sendPartitionData && this.prevSnapshot) {
       const delta = computeStateDelta(this.prevSnapshot, currentSnapshot);
       const deltaSize = getDeltaSize(delta);
-      if (delta.updated.length > 10 || deltaSize > 1e3) {
-        console.log(`[delta-BUG] frame=${frame} updated=${delta.updated.length} created=${delta.created.length} deleted=${delta.deleted.length} bytes=${deltaSize}`);
-        console.log(`  activeClients=[${this.activeClients.join(",")}]`);
-        console.log(`  prevSnapshot: entityCount=${this.prevSnapshot.entityCount} frame=${this.prevSnapshot.frame}`);
-        console.log(`  currentSnapshot: entityCount=${currentSnapshot.entityCount} frame=${currentSnapshot.frame}`);
-        const byType = {};
-        const byComp = {};
-        for (const upd of delta.updated) {
-          const entity = this.world.getEntity(upd.eid);
-          const type = entity?.type || "unknown";
-          byType[type] = (byType[type] || 0) + 1;
-          for (const comp of Object.keys(upd.changes)) {
-            byComp[comp] = (byComp[comp] || 0) + 1;
-          }
-        }
-        console.log(`  byType: ${JSON.stringify(byType)}`);
-        console.log(`  byComp: ${JSON.stringify(byComp)}`);
-        if (delta.updated.length > 0) {
-          console.log(`  sample updates:`);
-          for (const upd of delta.updated.slice(0, 5)) {
-            const entity = this.world.getEntity(upd.eid);
-            console.log(`    eid=${upd.eid} type=${entity?.type} changes=${JSON.stringify(upd.changes)}`);
-          }
-        }
-      }
       if (frame % 60 === 0 && !isDeltaEmpty(delta)) {
-        console.log(`[delta] frame=${frame} created=${delta.created.length} updated=${delta.updated.length} deleted=${delta.deleted.length} bytes=${deltaSize}`);
+        console.log(`[delta] frame=${frame} created=${delta.created.length} deleted=${delta.deleted.length} bytes=${deltaSize}`);
       }
       if (!isDeltaEmpty(delta)) {
         const entityCount = this.world.entityCount;
@@ -4349,7 +4398,7 @@ var Game = class {
         );
         const myPartitions = getClientPartitions(assignment, this.connection.clientId);
         for (const partitionId of myPartitions) {
-          const hasChangesInPartition = delta.created.some((e) => e.eid % numPartitions === partitionId) || delta.updated.some((e) => e.eid % numPartitions === partitionId) || delta.deleted.some((eid) => eid % numPartitions === partitionId);
+          const hasChangesInPartition = delta.created.some((e) => e.eid % numPartitions === partitionId) || delta.deleted.some((eid) => eid % numPartitions === partitionId);
           if (hasChangesInPartition) {
             const partitionData = getPartition(delta, partitionId, numPartitions);
             this.connection.sendPartitionData(frame, partitionId, partitionData);
@@ -4388,10 +4437,6 @@ var Game = class {
       this.lastInputSeq = input.seq;
     }
     if (type === "join") {
-      const wasConnected = this.connectedClients.includes(clientId);
-      if (!wasConnected) {
-        this.connectedClients.push(clientId);
-      }
       const wasActive = this.activeClients.includes(clientId);
       if (!wasActive) {
         this.activeClients.push(clientId);
@@ -4417,16 +4462,12 @@ var Game = class {
         this.pendingSnapshotUpload = true;
       }
     } else if (type === "leave" || type === "disconnect") {
-      const idx = this.connectedClients.indexOf(clientId);
-      if (idx !== -1) {
-        this.connectedClients.splice(idx, 1);
-      }
       const activeIdx = this.activeClients.indexOf(clientId);
       if (activeIdx !== -1) {
         this.activeClients.splice(activeIdx, 1);
       }
       if (clientId === this.authorityClientId) {
-        this.authorityClientId = this.connectedClients[0] || null;
+        this.authorityClientId = this.activeClients[0] || null;
       }
       if (DEBUG_NETWORK) {
         console.log(`[ecs] Leave: ${clientId.slice(0, 8)}, new authority=${this.authorityClientId?.slice(0, 8)}`);
@@ -4464,9 +4505,6 @@ var Game = class {
     const clientId = data?.clientId || input.clientId;
     const type = data?.type;
     if (type === "join") {
-      if (!this.connectedClients.includes(clientId)) {
-        this.connectedClients.push(clientId);
-      }
       if (!this.activeClients.includes(clientId)) {
         this.activeClients.push(clientId);
         this.activeClients.sort();
@@ -4475,16 +4513,12 @@ var Game = class {
         this.authorityClientId = clientId;
       }
     } else if (type === "leave" || type === "disconnect") {
-      const idx = this.connectedClients.indexOf(clientId);
-      if (idx !== -1) {
-        this.connectedClients.splice(idx, 1);
-      }
       const activeIdx = this.activeClients.indexOf(clientId);
       if (activeIdx !== -1) {
         this.activeClients.splice(activeIdx, 1);
       }
       if (clientId === this.authorityClientId) {
-        this.authorityClientId = this.connectedClients[0] || null;
+        this.authorityClientId = this.activeClients[0] || null;
       }
     }
   }
@@ -4499,7 +4533,8 @@ var Game = class {
     const sortedInputs = [...inputs].sort((a, b) => (a.seq || 0) - (b.seq || 0));
     const inputsByFrame = /* @__PURE__ */ new Map();
     for (const input of sortedInputs) {
-      const frame = input.frame ?? startFrame;
+      const rawFrame = input.frame ?? startFrame;
+      const frame = Math.max(rawFrame, startFrame);
       if (!inputsByFrame.has(frame)) {
         inputsByFrame.set(frame, []);
       }
@@ -4518,6 +4553,8 @@ var Game = class {
     this.currentFrame = endFrame;
     this.lastProcessedFrame = endFrame;
     this.clientsWithEntitiesFromSnapshot.clear();
+    this.stateHashHistory.clear();
+    this.stateHashHistory.set(endFrame, this.world.getStateHash());
     if (DEBUG_NETWORK) {
       console.log(`[ecs] Catchup complete at frame ${this.currentFrame}, hash=${this.getStateHash()}`);
     }
@@ -4698,16 +4735,12 @@ var Game = class {
     }
     this.clientsWithEntitiesFromSnapshot.clear();
     this.activeClients.length = 0;
-    this.connectedClients.length = 0;
     for (const entity of this.world.query(Player)) {
       const player = entity.get(Player);
       if (player.clientId !== 0) {
         const clientIdStr = this.getClientIdString(player.clientId);
         if (clientIdStr) {
           this.clientsWithEntitiesFromSnapshot.add(clientIdStr);
-          if (!this.connectedClients.includes(clientIdStr)) {
-            this.connectedClients.push(clientIdStr);
-          }
           if (!this.activeClients.includes(clientIdStr)) {
             this.activeClients.push(clientIdStr);
           }
@@ -4718,19 +4751,13 @@ var Game = class {
       }
     }
     this.activeClients.sort();
-    if (this.authorityClientId === null && this.activeClients.length > 0) {
-      this.authorityClientId = this.activeClients[0];
-      if (DEBUG_NETWORK) {
-        console.log(`[ecs] Authority from snapshot: ${this.authorityClientId?.slice(0, 8)}`);
-      }
-    }
     if (this.physics) {
       this.physics.wakeAllBodies();
     }
     if (snapshot.inputState) {
       this.world.setInputState(snapshot.inputState);
     }
-    console.log(`[ecs-debug] Snapshot loaded: entities=${this.world.getAllEntities().length} activeClients=[${this.activeClients.join(",")}] connectedClients=[${this.connectedClients.join(",")}]`);
+    console.log(`[ecs-debug] Snapshot loaded: entities=${this.world.getAllEntities().length} activeClients=[${this.activeClients.join(",")}]`);
     if (DEBUG_NETWORK) {
       console.log(`[ecs] Snapshot loaded: ${this.world.getAllEntities().length} entities, hash=${this.getStateHash()}, activeClients=${this.activeClients.length}`);
       const firstEntity = this.world.getAllEntities()[0];
@@ -4996,12 +5023,25 @@ var Game = class {
   // Game Loop
   // ==========================================
   /**
-   * Start the render loop.
+   * Start the game loop (render + local simulation when offline).
+   *
+   * When connected to server: server TICK messages drive simulation via handleTick().
+   * When offline: simulation ticks locally at tickRate.
    */
   startGameLoop() {
     if (this.gameLoop)
       return;
+    let lastTickTime = typeof performance !== "undefined" ? performance.now() : Date.now();
     const loop = () => {
+      const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+      if (!this.connection) {
+        while (now - lastTickTime >= this.tickIntervalMs) {
+          this.currentFrame++;
+          this.world.tick(this.currentFrame, []);
+          this.callbacks.onTick?.(this.currentFrame);
+          lastTickTime += this.tickIntervalMs;
+        }
+      }
       if (this.renderer?.render) {
         this.renderer.render();
       } else if (this.callbacks.render) {
@@ -5021,12 +5061,21 @@ var Game = class {
     }
   }
   /**
-   * Handle disconnect.
+   * Handle disconnect from server.
+   *
+   * Fires the onDisconnect callback with no clientId (network disconnect, not player leave).
+   * The game loop continues running - the game can decide how to handle this:
+   * - Continue playing locally (single-player mode)
+   * - Show a reconnect UI
+   * - Pause the game
    */
   handleDisconnect() {
-    if (DEBUG_NETWORK)
-      console.log("[ecs] Disconnected");
-    this.stopGameLoop();
+    console.log("[ecs] Disconnected from server");
+    const wasConnected = this.connection !== null;
+    this.connection = null;
+    if (wasConnected && this.callbacks.onDisconnect) {
+      this.callbacks.onDisconnect(void 0);
+    }
   }
   // ==========================================
   // Utility Methods
@@ -5053,6 +5102,12 @@ var Game = class {
    */
   isConnected() {
     return this.connection !== null;
+  }
+  /**
+   * Check if game has been started (via start() or connect()).
+   */
+  isStarted() {
+    return this.gameStarted;
   }
   /**
    * Get current frame.
@@ -5086,14 +5141,24 @@ var Game = class {
     this.connection.send(binary);
   }
   /**
-   * Leave current room.
+   * Leave current room and stop the game.
    */
   leaveRoom() {
     if (this.connection) {
       this.connection.leaveRoom();
       this.connection = null;
-      this.stopGameLoop();
     }
+    this.stopGameLoop();
+  }
+  /**
+   * Stop the game loop.
+   *
+   * Use this to pause or end the game. The game state is preserved.
+   * Call start() or connect() to resume.
+   */
+  stop() {
+    this.stopGameLoop();
+    console.log("[ecs] Game stopped");
   }
   /**
    * Get local client ID.
@@ -5130,7 +5195,7 @@ var Game = class {
    * Get connected clients.
    */
   getClients() {
-    return this.connectedClients;
+    return this.activeClients;
   }
   /**
    * Get client ID (for debug UI).
@@ -5956,7 +6021,7 @@ function disableDeterminismGuard() {
 }
 
 // src/version.ts
-var ENGINE_VERSION = "c73ce57";
+var ENGINE_VERSION = "bc48df6";
 
 // src/plugins/debug-ui.ts
 var debugDiv = null;

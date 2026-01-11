@@ -15,8 +15,6 @@ export interface SparseSnapshot {
     frame: number;
     /** Sequence number (for network ordering) */
     seq: number;
-    /** Bitmap: which entity indices are active */
-    entityMask: Uint32Array;
     /** Entity metadata (type, clientId) indexed by position in packed arrays */
     entityMeta: EntityMeta[];
     /** Packed component data for each component type */

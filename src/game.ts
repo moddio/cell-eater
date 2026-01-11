@@ -182,6 +182,12 @@ export class Game {
     /** Deferred snapshot flag (send after tick completes) */
     private pendingSnapshotUpload: boolean = false;
 
+    /** Flag: local room was created before server connected (for local-first) */
+    private localRoomCreated: boolean = false;
+
+    /** Flag: game has been started (via start() or connect()) */
+    private gameStarted: boolean = false;
+
     /** Last snapshot info for debug UI */
     private lastSnapshotHash: number | null = null;
     private lastSnapshotFrame: number = 0;
@@ -255,9 +261,9 @@ export class Game {
     private hashChecksPassed: number = 0;
     private hashChecksFailed: number = 0;
 
-    /** Previous frame's state hash (for desync comparison) */
-    private prevStateHash: number = 0;
-    private prevStateHashFrame: number = -1;
+    /** State hash history for desync comparison (frame -> hash) */
+    private stateHashHistory: Map<number, number> = new Map();
+    private readonly HASH_HISTORY_SIZE = 10;  // Keep last 10 frames of hashes
 
     // ==========================================
     // String Interning
@@ -538,29 +544,67 @@ export class Game {
     }
 
     /**
+     * Configure the game with callbacks.
+     *
+     * This method stores callbacks but does NOT start the game.
+     * Use this when you want to configure callbacks separately from starting.
+     *
+     * @example
+     * game.init({
+     *     onRoomCreate() { spawnFood(); },
+     *     onConnect(clientId) { spawnPlayer(clientId); }
+     * });
+     * game.start();  // Start locally
+     * // Later...
+     * game.connect(roomId);  // Connect to server
+     *
+     * @param callbacks Game lifecycle callbacks
+     * @returns The game instance for chaining
+     */
+    init(callbacks: GameCallbacks): this {
+        this.callbacks = { ...this.callbacks, ...callbacks };
+        return this;
+    }
+
+    /**
      * Start the game locally (offline mode).
      *
      * Use this for single-player or when you want to start the game
      * before connecting to a server. The game will simulate locally
      * at the configured tick rate.
      *
-     * If you later call connect(), the game will sync to the server
-     * and switch to server-driven simulation.
+     * If you later call connect(), the local state will be REPLACED
+     * by the server state (clean handoff, no merge).
      *
-     * @param callbacks Optional callbacks (onTick, render, etc.)
+     * @param callbacks Optional callbacks (onTick, render, etc.). If provided,
+     *                  these are merged with any callbacks set via init().
      */
     start(callbacks: GameCallbacks = {}): void {
+        // Merge callbacks (init() callbacks are preserved, start() callbacks override)
         this.callbacks = { ...this.callbacks, ...callbacks };
 
-        // Call onRoomCreate for initial setup (like spawning entities)
+        // Generate a local client ID for offline play
+        const localClientId = 'local-' + Math.random().toString(36).substring(2, 10);
+        this.localClientIdStr = localClientId;
+
+        // Call onRoomCreate for initial setup (like spawning world entities)
         if (this.callbacks.onRoomCreate) {
             this.callbacks.onRoomCreate();
+        }
+        this.localRoomCreated = true;
+
+        // Call onConnect for the local player (spawns player entity)
+        if (this.callbacks.onConnect) {
+            this.callbacks.onConnect(localClientId);
         }
 
         // Start the game loop (will tick locally since no connection)
         this.startGameLoop();
 
-        if (DEBUG_NETWORK) console.log('[ecs] Started in local/offline mode');
+        // Mark game as started
+        this.gameStarted = true;
+
+        console.log('[ecs] Started in local/offline mode with clientId:', localClientId);
     }
 
     // ==========================================
@@ -569,37 +613,130 @@ export class Game {
 
     /**
      * Connect to a multiplayer room.
+     *
+     * Can be called in several ways:
+     *
+     * **Mode 1: Online-only (callbacks in connect)**
+     * ```js
+     * game.connect(roomId, {
+     *     onRoomCreate() { spawnFood(); },
+     *     onConnect(clientId) { spawnPlayer(clientId); }
+     * });
+     * ```
+     * This auto-starts locally, then connects to server.
+     *
+     * **Mode 2: Local-first with seamless transition**
+     * ```js
+     * game.init({ onRoomCreate, onConnect });
+     * game.start();  // Play locally immediately
+     * game.connect(roomId);  // Server state replaces local state
+     * ```
+     *
+     * **Mode 3: Using options parameter**
+     * ```js
+     * game.connect(roomId, { onRoomCreate, onConnect }, { nodeUrl: '...' });
+     * ```
+     *
+     * When called after start(), the local state is FLUSHED and REPLACED with server state.
+     * This is a clean handoff - no state merging.
+     *
+     * @param roomId The room to connect to
+     * @param callbacksOrOptions Either GameCallbacks or ConnectOptions
+     * @param options ConnectOptions (only if second param is callbacks)
      */
     async connect(
         roomId: string,
-        callbacks: GameCallbacks,
-        options: ConnectOptions = {}
+        callbacksOrOptions?: GameCallbacks | ConnectOptions,
+        options?: ConnectOptions
     ): Promise<void> {
-        this.callbacks = callbacks;
+        // Handle overloaded signatures:
+        // connect(roomId)
+        // connect(roomId, callbacks)
+        // connect(roomId, options)
+        // connect(roomId, callbacks, options)
+        let callbacks: GameCallbacks = {};
+        let connectOptions: ConnectOptions = {};
+
+        if (callbacksOrOptions) {
+            // Check if it's ConnectOptions (has nodeUrl, centralServiceUrl, or joinToken)
+            const isConnectOptions = 'nodeUrl' in callbacksOrOptions ||
+                                     'centralServiceUrl' in callbacksOrOptions ||
+                                     'joinToken' in callbacksOrOptions;
+
+            if (isConnectOptions) {
+                // connect(roomId, options) - no callbacks
+                connectOptions = callbacksOrOptions as ConnectOptions;
+            } else {
+                // connect(roomId, callbacks) or connect(roomId, callbacks, options)
+                callbacks = callbacksOrOptions as GameCallbacks;
+                connectOptions = options || {};
+            }
+        }
+
+        // Merge callbacks (preserve existing from init()/start() if any)
+        this.callbacks = { ...this.callbacks, ...callbacks };
 
         // Allow URL params to override (for testing)
         if (typeof window !== 'undefined') {
             const params = new URLSearchParams(window.location.search);
             if (params.get('room')) roomId = params.get('room')!;
-            if (params.get('nodeUrl')) options.nodeUrl = params.get('nodeUrl')!;
+            if (params.get('nodeUrl')) connectOptions.nodeUrl = params.get('nodeUrl')!;
         }
 
         this.connectedRoomId = roomId;
 
-        // Get network SDK
-        const network: NetworkSDK = (window as any).moduNetwork;
-        if (!network) {
-            throw new Error('moduNetwork not found. Include modu-network SDK before calling connect().');
+        // Track if we started locally before this connect() call
+        const wasStartedLocally = this.gameStarted;
+
+        if (wasStartedLocally) {
+            // LOCAL-FIRST MODE: start() was called first
+            // Game is already running locally - just connect to server in background
+            // When server connects, local state will be REPLACED with server state
+            console.log(`[ecs] Connecting to room "${roomId}"... (local game will be replaced with server state)`);
+        } else {
+            // ONLINE-FIRST MODE: connect() called without start()
+            // Start game locally while waiting for server connection
+            console.log(`[ecs] Starting game locally, connecting to room "${roomId}" in background...`);
+
+            // Generate a temporary local clientId for offline play
+            const localClientId = 'local-' + Math.random().toString(36).substring(2, 10);
+            this.localClientIdStr = localClientId;
+
+            // Call onRoomCreate immediately for local play (spawns world entities like food)
+            if (this.callbacks.onRoomCreate) {
+                this.callbacks.onRoomCreate();
+                this.localRoomCreated = true;
+            }
+
+            // NOTE: Don't call onConnect locally in online-first mode
+            // Player spawns when real server connection happens
+            // This avoids duplicate players and state divergence
+
+            // Mark game as started
+            this.gameStarted = true;
         }
 
-        console.log(`[ecs] Connecting to room "${roomId}"...`);
+        // Start the game loop if not already running
+        this.startGameLoop();
+
+        // Get network SDK (only available in browser)
+        const network: NetworkSDK | undefined = typeof window !== 'undefined'
+            ? (window as any).moduNetwork
+            : undefined;
+        if (!network) {
+            console.warn('[ecs] moduNetwork not found - running in offline mode');
+            return;
+        }
+
+        // Add promise timeout tracking for debugging hangs
+        const connectStartTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
 
         try {
             this.connection = await network.connect(roomId, {
-                nodeUrl: options.nodeUrl,
-                centralServiceUrl: options.centralServiceUrl,
+                nodeUrl: connectOptions.nodeUrl,
+                centralServiceUrl: connectOptions.centralServiceUrl,
                 appId: 'dev',
-                joinToken: options.joinToken,
+                joinToken: connectOptions.joinToken,
 
                 onConnect: (
                     snapshot: any,
@@ -629,6 +766,9 @@ export class Game {
                 }
             });
 
+            const connectDuration = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - connectStartTime;
+            console.log(`[ecs] Connected successfully in ${connectDuration.toFixed(0)}ms, clientId: ${this.connection.clientId}`);
+
             this.localClientIdStr = this.connection.clientId;
 
             // Set up state sync callbacks
@@ -648,7 +788,9 @@ export class Game {
                 };
             }
         } catch (err: any) {
-            console.warn('[ecs] Connection failed:', err?.message || err);
+            const connectDuration = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - connectStartTime;
+            console.error(`[ecs] Connection failed after ${connectDuration.toFixed(0)}ms:`, err?.message || err);
+            console.error('[ecs] Make sure the server is running. Check: 1) Central service on port 9001, 2) Node server');
             this.connection = null;
             this.connectedRoomId = null;
         }
@@ -670,22 +812,25 @@ export class Game {
      */
     private handleMajorityHash(frame: number, majorityHash: number): void {
         // Compare our cached hash for this frame with majority
-        // majorityHash is for frame N-1, arrives with tick N
-        // We cached our hash for frame N-1 when we processed tick N-1
+        // Server sends majorityHash for frame-3 to account for network latency
+        // We look up our cached hash for that frame from history
+
+        const localHash = this.stateHashHistory.get(frame);
 
         // Debug: log every 100 frames
         if (frame % 100 === 0) {
-            console.log(`[state-sync] frame=${frame} prevFrame=${this.prevStateHashFrame} localHash=${this.prevStateHash.toString(16)} majorityHash=${majorityHash.toString(16)}`);
+            console.log(`[state-sync] frame=${frame} localHash=${localHash?.toString(16) ?? 'none'} majorityHash=${majorityHash.toString(16)}`);
         }
 
-        if (this.prevStateHashFrame !== frame) {
+        if (localHash === undefined) {
             // Haven't computed hash for this frame yet, skip
+            // This happens during initial connection or if history was pruned
+            // Rate-limit warning to avoid console spam
             if (frame % 100 === 0) {
-                console.log(`[state-sync] Skipping - frame mismatch: expected=${frame} got=${this.prevStateHashFrame}`);
+                console.warn(`[state-sync] No local hash for frame ${frame} (history has ${this.stateHashHistory.size} frames)`);
             }
             return;
         }
-        const localHash = this.prevStateHash;
 
         if (localHash === majorityHash) {
             // Hash matches - track successful check
@@ -787,6 +932,11 @@ export class Game {
 
         // CRITICAL: Set prevSnapshot so delta computation has valid baseline after resync
         this.prevSnapshot = this.world.getSparseSnapshot();
+
+        // CRITICAL: Initialize hash history so next majorityHash comparison works
+        // Clear old history and start fresh from this frame
+        this.stateHashHistory.clear();
+        this.stateHashHistory.set(serverFrame, newLocalHash);
 
         // Store as last good snapshot
         this.lastGoodSnapshot = {
@@ -1083,9 +1233,34 @@ export class Game {
                 this.activeClients.sort();
             }
 
-            this.callbacks.onRoomCreate?.();
+            // LOCAL-FIRST HANDOFF: If start() was called before connect(),
+            // flush local state and recreate fresh with server identity.
+            // This ensures entity IDs and clientId match server expectations.
+            if (this.localRoomCreated) {
+                console.log('[ecs] Local-first handoff: flushing local state, recreating with server identity');
 
-            // Process all inputs (may include our own join event)
+                // Reset world state (clears all entities, ID allocator, etc.)
+                this.world.reset();
+                if (this.physics) {
+                    this.physics.clear();
+                }
+
+                // Clear local state tracking
+                this.clientIdToNum.clear();
+                this.numToClientId.clear();
+                this.nextClientNum = 1;
+                this.activeClients = [clientId];
+                this.localRoomCreated = false; // Reset so callbacks run fresh
+
+                // Recreate room with fresh state
+                this.callbacks.onRoomCreate?.();
+                this.localRoomCreated = true;
+            } else {
+                // Normal path: connect() called without start()
+                this.callbacks.onRoomCreate?.();
+            }
+
+            // Process all inputs (may include our own join event which calls onConnect)
             for (const input of inputs) {
                 this.processInput(input);
             }
@@ -1098,7 +1273,7 @@ export class Game {
 
         // Start game loop
         this.startGameLoop();
-        if (DEBUG_NETWORK) console.log('[ecs] Game loop started');
+        console.log(`[ecs] Game loop started, waiting for server TICK messages...`);
     }
 
     /**
@@ -1145,9 +1320,15 @@ export class Game {
         // 5. Record tick time for interpolation
         this.lastTickTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
 
-        // 6. Check for desync using majority hash from server (uses cached hash from previous tick)
+        // 6. Check for desync using majority hash from server
+        // Server sends majorityHash for frame-3 (to account for network latency)
+        // We compare against our cached hash for the same frame
         if (majorityHash !== undefined && majorityHash !== 0) {
-            this.handleMajorityHash(frame - 1, majorityHash);
+            const hashFrame = frame - 3;  // Must match server's offset in input-batcher.ts
+            this.handleMajorityHash(hashFrame, majorityHash);
+        } else if (this.activeClients.length > 1 && frame % 100 === 0) {
+            // Log when we expect majorityHash but don't receive it (only in multiplayer)
+            console.warn(`[state-sync] No majorityHash in tick ${frame} (expected with ${this.activeClients.length} clients)`);
         }
 
         // 7. Send state sync data (stateHash + partition data if assigned)
@@ -1177,9 +1358,18 @@ export class Game {
         this.connection.sendStateHash(frame, stateHash);
         this.deltaBytesThisSecond += 9;
 
-        // Cache hash for desync comparison (majorityHash arrives in next tick)
-        this.prevStateHash = stateHash;
-        this.prevStateHashFrame = frame;
+        // Cache hash in history for desync comparison
+        // (majorityHash for this frame will arrive in a future tick)
+        this.stateHashHistory.set(frame, stateHash);
+        // Prune old entries to limit memory usage
+        if (this.stateHashHistory.size > this.HASH_HISTORY_SIZE) {
+            const oldestFrame = frame - this.HASH_HISTORY_SIZE;
+            for (const f of this.stateHashHistory.keys()) {
+                if (f <= oldestFrame) {
+                    this.stateHashHistory.delete(f);
+                }
+            }
+        }
 
         // Always update prevSnapshot for delta comparison (even when alone)
         const currentSnapshot = this.world.getSparseSnapshot();
@@ -1401,8 +1591,11 @@ export class Game {
         // Build map of frame -> inputs for that frame (sorted by seq)
         const inputsByFrame = new Map<number, ServerInput[]>();
         for (const input of sortedInputs) {
-            // Inputs without frame are assigned to startFrame (first catchup frame)
-            const frame = input.frame ?? startFrame;
+            // CRITICAL: Clamp input frames to catchup range
+            // If input.frame < startFrame, we still need to process it - assign to startFrame
+            // This can happen when snapshot was taken between input creation and tick broadcast
+            const rawFrame = input.frame ?? startFrame;
+            const frame = Math.max(rawFrame, startFrame);
             if (!inputsByFrame.has(frame)) {
                 inputsByFrame.set(frame, []);
             }
@@ -1433,6 +1626,11 @@ export class Game {
         // Clear the snapshot entity tracking - catchup is done
         // Future join events should trigger onConnect normally
         this.clientsWithEntitiesFromSnapshot.clear();
+
+        // CRITICAL: Initialize hash history so next majorityHash comparison works
+        // Clear old history and start fresh from this frame
+        this.stateHashHistory.clear();
+        this.stateHashHistory.set(endFrame, this.world.getStateHash());
 
         if (DEBUG_NETWORK) {
             console.log(`[ecs] Catchup complete at frame ${this.currentFrame}, hash=${this.getStateHash()}`);
@@ -1703,13 +1901,9 @@ export class Game {
         // Sort activeClients for deterministic partition assignment
         this.activeClients.sort();
 
-        // Set authorityClientId if not already set (first client alphabetically is authority)
-        if (this.authorityClientId === null && this.activeClients.length > 0) {
-            this.authorityClientId = this.activeClients[0];
-            if (DEBUG_NETWORK) {
-                console.log(`[ecs] Authority from snapshot: ${this.authorityClientId?.slice(0, 8)}`);
-            }
-        }
+        // NOTE: Do NOT set authorityClientId here from activeClients[0]
+        // Authority is determined by join order, not alphabetical order
+        // processAuthorityChainInput() will set it correctly from the first join event
 
         // CRITICAL: Wake all physics bodies after snapshot restore
         // Without this, late joiners have awake bodies while existing clients may have
@@ -2128,11 +2322,31 @@ export class Game {
     }
 
     /**
-     * Handle disconnect.
+     * Handle disconnect from server.
+     *
+     * Fires the onDisconnect callback with no clientId (network disconnect, not player leave).
+     * The game loop continues running - the game can decide how to handle this:
+     * - Continue playing locally (single-player mode)
+     * - Show a reconnect UI
+     * - Pause the game
      */
     private handleDisconnect(): void {
-        if (DEBUG_NETWORK) console.log('[ecs] Disconnected');
-        this.stopGameLoop();
+        console.log('[ecs] Disconnected from server');
+
+        // Clear connection state
+        const wasConnected = this.connection !== null;
+        this.connection = null;
+
+        // Fire onDisconnect callback with undefined clientId to indicate network disconnect
+        // (as opposed to a specific player leaving, which passes their clientId)
+        if (wasConnected && this.callbacks.onDisconnect) {
+            // Pass undefined to indicate this is a network disconnect, not a player leave
+            this.callbacks.onDisconnect(undefined as any);
+        }
+
+        // NOTE: We do NOT stop the game loop.
+        // The game continues running locally - the callback can decide what to do.
+        // If the game wants to stop, it can call game.stop() or game.leaveRoom().
     }
 
     // ==========================================
@@ -2164,6 +2378,13 @@ export class Game {
      */
     isConnected(): boolean {
         return this.connection !== null;
+    }
+
+    /**
+     * Check if game has been started (via start() or connect()).
+     */
+    isStarted(): boolean {
+        return this.gameStarted;
     }
 
     /**
@@ -2200,14 +2421,25 @@ export class Game {
     }
 
     /**
-     * Leave current room.
+     * Leave current room and stop the game.
      */
     leaveRoom(): void {
         if (this.connection) {
             this.connection.leaveRoom();
             this.connection = null;
-            this.stopGameLoop();
         }
+        this.stopGameLoop();
+    }
+
+    /**
+     * Stop the game loop.
+     *
+     * Use this to pause or end the game. The game state is preserved.
+     * Call start() or connect() to resume.
+     */
+    stop(): void {
+        this.stopGameLoop();
+        console.log('[ecs] Game stopped');
     }
 
     /**

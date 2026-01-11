@@ -17,8 +17,6 @@ export interface StateDelta {
     resultHash: number;
     /** Newly created entities */
     created: CreatedEntity[];
-    /** Updated entities (partial data) */
-    updated: UpdatedEntity[];
     /** Deleted entity IDs */
     deleted: number[];
 }
@@ -31,14 +29,6 @@ export interface CreatedEntity {
     clientId?: number;
     /** Component name -> field name -> value */
     components: Record<string, Record<string, number>>;
-}
-/**
- * An entity with changed fields only.
- */
-export interface UpdatedEntity {
-    eid: number;
-    /** Component name -> field name -> new value (only changed fields) */
-    changes: Record<string, Record<string, number>>;
 }
 /**
  * Compute state delta between two snapshots.
@@ -78,7 +68,6 @@ export interface PartitionDelta {
     numPartitions: number;
     frame: number;
     created: CreatedEntity[];
-    updated: UpdatedEntity[];
     deleted: number[];
 }
 /**
@@ -93,9 +82,8 @@ export declare function assemblePartitions(partitions: PartitionDelta[]): StateD
  * Apply delta to update snapshot/world state.
  * Returns the entity IDs that were affected.
  */
-export declare function applyDelta(delta: StateDelta, createEntity: (eid: number, type: string, clientId?: number, components?: Record<string, Record<string, number>>) => void, updateEntity: (eid: number, changes: Record<string, Record<string, number>>) => void, deleteEntity: (eid: number) => void): {
+export declare function applyDelta(delta: StateDelta, createEntity: (eid: number, type: string, clientId?: number, components?: Record<string, Record<string, number>>) => void, deleteEntity: (eid: number) => void): {
     created: number[];
-    updated: number[];
     deleted: number[];
 };
 /**

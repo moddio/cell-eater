@@ -3660,6 +3660,10 @@ var Modu = (() => {
       this.gameLoop = null;
       /** Deferred snapshot flag (send after tick completes) */
       this.pendingSnapshotUpload = false;
+      /** Flag: local room was created before server connected (for local-first) */
+      this.localRoomCreated = false;
+      /** Flag: game has been started (via start() or connect()) */
+      this.gameStarted = false;
       /** Last snapshot info for debug UI */
       this.lastSnapshotHash = null;
       this.lastSnapshotFrame = 0;
@@ -3711,9 +3715,10 @@ var Modu = (() => {
       /** Hash comparison stats (rolling window) */
       this.hashChecksPassed = 0;
       this.hashChecksFailed = 0;
-      /** Previous frame's state hash (for desync comparison) */
-      this.prevStateHash = 0;
-      this.prevStateHashFrame = -1;
+      /** State hash history for desync comparison (frame -> hash) */
+      this.stateHashHistory = /* @__PURE__ */ new Map();
+      this.HASH_HISTORY_SIZE = 10;
+      // Keep last 10 frames of hashes
       // ==========================================
       // String Interning
       // ==========================================
@@ -3949,53 +3954,138 @@ var Modu = (() => {
       this.currentFrame = 0;
     }
     /**
+     * Configure the game with callbacks.
+     *
+     * This method stores callbacks but does NOT start the game.
+     * Use this when you want to configure callbacks separately from starting.
+     *
+     * @example
+     * game.init({
+     *     onRoomCreate() { spawnFood(); },
+     *     onConnect(clientId) { spawnPlayer(clientId); }
+     * });
+     * game.start();  // Start locally
+     * // Later...
+     * game.connect(roomId);  // Connect to server
+     *
+     * @param callbacks Game lifecycle callbacks
+     * @returns The game instance for chaining
+     */
+    init(callbacks) {
+      this.callbacks = { ...this.callbacks, ...callbacks };
+      return this;
+    }
+    /**
      * Start the game locally (offline mode).
      *
      * Use this for single-player or when you want to start the game
      * before connecting to a server. The game will simulate locally
      * at the configured tick rate.
      *
-     * If you later call connect(), the game will sync to the server
-     * and switch to server-driven simulation.
+     * If you later call connect(), the local state will be REPLACED
+     * by the server state (clean handoff, no merge).
      *
-     * @param callbacks Optional callbacks (onTick, render, etc.)
+     * @param callbacks Optional callbacks (onTick, render, etc.). If provided,
+     *                  these are merged with any callbacks set via init().
      */
     start(callbacks = {}) {
       this.callbacks = { ...this.callbacks, ...callbacks };
+      const localClientId = "local-" + Math.random().toString(36).substring(2, 10);
+      this.localClientIdStr = localClientId;
       if (this.callbacks.onRoomCreate) {
         this.callbacks.onRoomCreate();
       }
+      this.localRoomCreated = true;
+      if (this.callbacks.onConnect) {
+        this.callbacks.onConnect(localClientId);
+      }
       this.startGameLoop();
-      if (DEBUG_NETWORK)
-        console.log("[ecs] Started in local/offline mode");
+      this.gameStarted = true;
+      console.log("[ecs] Started in local/offline mode with clientId:", localClientId);
     }
     // ==========================================
     // Network Connection
     // ==========================================
     /**
      * Connect to a multiplayer room.
+     *
+     * Can be called in several ways:
+     *
+     * **Mode 1: Online-only (callbacks in connect)**
+     * ```js
+     * game.connect(roomId, {
+     *     onRoomCreate() { spawnFood(); },
+     *     onConnect(clientId) { spawnPlayer(clientId); }
+     * });
+     * ```
+     * This auto-starts locally, then connects to server.
+     *
+     * **Mode 2: Local-first with seamless transition**
+     * ```js
+     * game.init({ onRoomCreate, onConnect });
+     * game.start();  // Play locally immediately
+     * game.connect(roomId);  // Server state replaces local state
+     * ```
+     *
+     * **Mode 3: Using options parameter**
+     * ```js
+     * game.connect(roomId, { onRoomCreate, onConnect }, { nodeUrl: '...' });
+     * ```
+     *
+     * When called after start(), the local state is FLUSHED and REPLACED with server state.
+     * This is a clean handoff - no state merging.
+     *
+     * @param roomId The room to connect to
+     * @param callbacksOrOptions Either GameCallbacks or ConnectOptions
+     * @param options ConnectOptions (only if second param is callbacks)
      */
-    async connect(roomId, callbacks, options = {}) {
-      this.callbacks = callbacks;
+    async connect(roomId, callbacksOrOptions, options) {
+      let callbacks = {};
+      let connectOptions = {};
+      if (callbacksOrOptions) {
+        const isConnectOptions = "nodeUrl" in callbacksOrOptions || "centralServiceUrl" in callbacksOrOptions || "joinToken" in callbacksOrOptions;
+        if (isConnectOptions) {
+          connectOptions = callbacksOrOptions;
+        } else {
+          callbacks = callbacksOrOptions;
+          connectOptions = options || {};
+        }
+      }
+      this.callbacks = { ...this.callbacks, ...callbacks };
       if (typeof window !== "undefined") {
         const params = new URLSearchParams(window.location.search);
         if (params.get("room"))
           roomId = params.get("room");
         if (params.get("nodeUrl"))
-          options.nodeUrl = params.get("nodeUrl");
+          connectOptions.nodeUrl = params.get("nodeUrl");
       }
       this.connectedRoomId = roomId;
-      const network = window.moduNetwork;
-      if (!network) {
-        throw new Error("moduNetwork not found. Include modu-network SDK before calling connect().");
+      const wasStartedLocally = this.gameStarted;
+      if (wasStartedLocally) {
+        console.log(`[ecs] Connecting to room "${roomId}"... (local game will be replaced with server state)`);
+      } else {
+        console.log(`[ecs] Starting game locally, connecting to room "${roomId}" in background...`);
+        const localClientId = "local-" + Math.random().toString(36).substring(2, 10);
+        this.localClientIdStr = localClientId;
+        if (this.callbacks.onRoomCreate) {
+          this.callbacks.onRoomCreate();
+          this.localRoomCreated = true;
+        }
+        this.gameStarted = true;
       }
-      console.log(`[ecs] Connecting to room "${roomId}"...`);
+      this.startGameLoop();
+      const network = typeof window !== "undefined" ? window.moduNetwork : void 0;
+      if (!network) {
+        console.warn("[ecs] moduNetwork not found - running in offline mode");
+        return;
+      }
+      const connectStartTime = typeof performance !== "undefined" ? performance.now() : Date.now();
       try {
         this.connection = await network.connect(roomId, {
-          nodeUrl: options.nodeUrl,
-          centralServiceUrl: options.centralServiceUrl,
+          nodeUrl: connectOptions.nodeUrl,
+          centralServiceUrl: connectOptions.centralServiceUrl,
           appId: "dev",
-          joinToken: options.joinToken,
+          joinToken: connectOptions.joinToken,
           onConnect: (snapshot, inputs, frame, nodeUrl, fps, clientId) => {
             this.handleConnect(snapshot, inputs, frame, fps, clientId);
           },
@@ -4012,6 +4102,8 @@ var Modu = (() => {
             console.error("[ecs] Network error:", error);
           }
         });
+        const connectDuration = (typeof performance !== "undefined" ? performance.now() : Date.now()) - connectStartTime;
+        console.log(`[ecs] Connected successfully in ${connectDuration.toFixed(0)}ms, clientId: ${this.connection.clientId}`);
         this.localClientIdStr = this.connection.clientId;
         if (this.connection.onReliabilityUpdate !== void 0) {
           this.connection.onReliabilityUpdate = (scores, version) => {
@@ -4029,7 +4121,9 @@ var Modu = (() => {
           };
         }
       } catch (err) {
-        console.warn("[ecs] Connection failed:", err?.message || err);
+        const connectDuration = (typeof performance !== "undefined" ? performance.now() : Date.now()) - connectStartTime;
+        console.error(`[ecs] Connection failed after ${connectDuration.toFixed(0)}ms:`, err?.message || err);
+        console.error("[ecs] Make sure the server is running. Check: 1) Central service on port 9001, 2) Node server");
         this.connection = null;
         this.connectedRoomId = null;
       }
@@ -4048,16 +4142,16 @@ var Modu = (() => {
      * Handle majority hash from server (for desync detection).
      */
     handleMajorityHash(frame, majorityHash) {
+      const localHash = this.stateHashHistory.get(frame);
       if (frame % 100 === 0) {
-        console.log(`[state-sync] frame=${frame} prevFrame=${this.prevStateHashFrame} localHash=${this.prevStateHash.toString(16)} majorityHash=${majorityHash.toString(16)}`);
+        console.log(`[state-sync] frame=${frame} localHash=${localHash?.toString(16) ?? "none"} majorityHash=${majorityHash.toString(16)}`);
       }
-      if (this.prevStateHashFrame !== frame) {
+      if (localHash === void 0) {
         if (frame % 100 === 0) {
-          console.log(`[state-sync] Skipping - frame mismatch: expected=${frame} got=${this.prevStateHashFrame}`);
+          console.warn(`[state-sync] No local hash for frame ${frame} (history has ${this.stateHashHistory.size} frames)`);
         }
         return;
       }
-      const localHash = this.prevStateHash;
       if (localHash === majorityHash) {
         this.hashChecksPassed++;
         if (this.isDesynced && !this.resyncPending) {
@@ -4127,6 +4221,8 @@ var Modu = (() => {
         console.error(`  Got:      ${newLocalHash.toString(16).padStart(8, "0")}`);
       }
       this.prevSnapshot = this.world.getSparseSnapshot();
+      this.stateHashHistory.clear();
+      this.stateHashHistory.set(serverFrame, newLocalHash);
       this.lastGoodSnapshot = {
         snapshot: JSON.parse(JSON.stringify(snapshot)),
         frame: serverFrame,
@@ -4343,7 +4439,22 @@ var Modu = (() => {
           this.activeClients.push(clientId);
           this.activeClients.sort();
         }
-        this.callbacks.onRoomCreate?.();
+        if (this.localRoomCreated) {
+          console.log("[ecs] Local-first handoff: flushing local state, recreating with server identity");
+          this.world.reset();
+          if (this.physics) {
+            this.physics.clear();
+          }
+          this.clientIdToNum.clear();
+          this.numToClientId.clear();
+          this.nextClientNum = 1;
+          this.activeClients = [clientId];
+          this.localRoomCreated = false;
+          this.callbacks.onRoomCreate?.();
+          this.localRoomCreated = true;
+        } else {
+          this.callbacks.onRoomCreate?.();
+        }
         for (const input of inputs) {
           this.processInput(input);
         }
@@ -4352,8 +4463,7 @@ var Modu = (() => {
         this.sendSnapshot("init");
       }
       this.startGameLoop();
-      if (DEBUG_NETWORK)
-        console.log("[ecs] Game loop started");
+      console.log(`[ecs] Game loop started, waiting for server TICK messages...`);
     }
     /**
      * Handle server tick.
@@ -4383,7 +4493,10 @@ var Modu = (() => {
       }
       this.lastTickTime = typeof performance !== "undefined" ? performance.now() : Date.now();
       if (majorityHash !== void 0 && majorityHash !== 0) {
-        this.handleMajorityHash(frame - 1, majorityHash);
+        const hashFrame = frame - 3;
+        this.handleMajorityHash(hashFrame, majorityHash);
+      } else if (this.activeClients.length > 1 && frame % 100 === 0) {
+        console.warn(`[state-sync] No majorityHash in tick ${frame} (expected with ${this.activeClients.length} clients)`);
       }
       this.sendStateSync(frame);
     }
@@ -4404,8 +4517,15 @@ var Modu = (() => {
       const stateHash = this.world.getStateHash();
       this.connection.sendStateHash(frame, stateHash);
       this.deltaBytesThisSecond += 9;
-      this.prevStateHash = stateHash;
-      this.prevStateHashFrame = frame;
+      this.stateHashHistory.set(frame, stateHash);
+      if (this.stateHashHistory.size > this.HASH_HISTORY_SIZE) {
+        const oldestFrame = frame - this.HASH_HISTORY_SIZE;
+        for (const f of this.stateHashHistory.keys()) {
+          if (f <= oldestFrame) {
+            this.stateHashHistory.delete(f);
+          }
+        }
+      }
       const currentSnapshot = this.world.getSparseSnapshot();
       if (this.activeClients.length > 1 && this.connection.clientId && this.connection.sendPartitionData && this.prevSnapshot) {
         const delta = computeStateDelta(this.prevSnapshot, currentSnapshot);
@@ -4559,7 +4679,8 @@ var Modu = (() => {
       const sortedInputs = [...inputs].sort((a, b) => (a.seq || 0) - (b.seq || 0));
       const inputsByFrame = /* @__PURE__ */ new Map();
       for (const input of sortedInputs) {
-        const frame = input.frame ?? startFrame;
+        const rawFrame = input.frame ?? startFrame;
+        const frame = Math.max(rawFrame, startFrame);
         if (!inputsByFrame.has(frame)) {
           inputsByFrame.set(frame, []);
         }
@@ -4578,6 +4699,8 @@ var Modu = (() => {
       this.currentFrame = endFrame;
       this.lastProcessedFrame = endFrame;
       this.clientsWithEntitiesFromSnapshot.clear();
+      this.stateHashHistory.clear();
+      this.stateHashHistory.set(endFrame, this.world.getStateHash());
       if (DEBUG_NETWORK) {
         console.log(`[ecs] Catchup complete at frame ${this.currentFrame}, hash=${this.getStateHash()}`);
       }
@@ -4774,12 +4897,6 @@ var Modu = (() => {
         }
       }
       this.activeClients.sort();
-      if (this.authorityClientId === null && this.activeClients.length > 0) {
-        this.authorityClientId = this.activeClients[0];
-        if (DEBUG_NETWORK) {
-          console.log(`[ecs] Authority from snapshot: ${this.authorityClientId?.slice(0, 8)}`);
-        }
-      }
       if (this.physics) {
         this.physics.wakeAllBodies();
       }
@@ -5090,12 +5207,21 @@ var Modu = (() => {
       }
     }
     /**
-     * Handle disconnect.
+     * Handle disconnect from server.
+     *
+     * Fires the onDisconnect callback with no clientId (network disconnect, not player leave).
+     * The game loop continues running - the game can decide how to handle this:
+     * - Continue playing locally (single-player mode)
+     * - Show a reconnect UI
+     * - Pause the game
      */
     handleDisconnect() {
-      if (DEBUG_NETWORK)
-        console.log("[ecs] Disconnected");
-      this.stopGameLoop();
+      console.log("[ecs] Disconnected from server");
+      const wasConnected = this.connection !== null;
+      this.connection = null;
+      if (wasConnected && this.callbacks.onDisconnect) {
+        this.callbacks.onDisconnect(void 0);
+      }
     }
     // ==========================================
     // Utility Methods
@@ -5122,6 +5248,12 @@ var Modu = (() => {
      */
     isConnected() {
       return this.connection !== null;
+    }
+    /**
+     * Check if game has been started (via start() or connect()).
+     */
+    isStarted() {
+      return this.gameStarted;
     }
     /**
      * Get current frame.
@@ -5155,14 +5287,24 @@ var Modu = (() => {
       this.connection.send(binary);
     }
     /**
-     * Leave current room.
+     * Leave current room and stop the game.
      */
     leaveRoom() {
       if (this.connection) {
         this.connection.leaveRoom();
         this.connection = null;
-        this.stopGameLoop();
       }
+      this.stopGameLoop();
+    }
+    /**
+     * Stop the game loop.
+     *
+     * Use this to pause or end the game. The game state is preserved.
+     * Call start() or connect() to resume.
+     */
+    stop() {
+      this.stopGameLoop();
+      console.log("[ecs] Game stopped");
     }
     /**
      * Get local client ID.
@@ -6025,7 +6167,7 @@ var Modu = (() => {
   }
 
   // src/version.ts
-  var ENGINE_VERSION = "c73ce57";
+  var ENGINE_VERSION = "bc48df6";
 
   // src/plugins/debug-ui.ts
   var debugDiv = null;
@@ -8842,4 +8984,4 @@ var Modu = (() => {
   }
   return __toCommonJS(src_exports);
 })();
-//# sourceMappingURL=index.iife-OBH75EXI.js.map
+//# sourceMappingURL=index.iife-5ULXDDHD.js.map

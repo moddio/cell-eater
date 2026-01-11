@@ -4,7 +4,7 @@
  * Efficient snapshot encoding using entity bitmaps.
  * Only active entities are stored, not MAX_ENTITIES slots.
  */
-import { MAX_ENTITIES, INDEX_MASK } from './constants';
+import { INDEX_MASK } from './constants';
 import { getAllComponents } from './component';
 /**
  * Sparse snapshot encoder/decoder.
@@ -14,14 +14,10 @@ export class SparseSnapshotCodec {
      * Encode world state to sparse snapshot.
      */
     encode(activeEids, getEntityType, getEntityClientId, getComponentsForEntity, allocatorState, stringsState, frame = 0, seq = 0, rng) {
-        // Build entity bitmap
-        const entityMask = new Uint32Array(Math.ceil(MAX_ENTITIES / 32));
         const entityMeta = [];
         // Sort eids for deterministic order
         const sortedEids = [...activeEids].sort((a, b) => a - b);
         for (const eid of sortedEids) {
-            const index = eid & INDEX_MASK;
-            entityMask[index >>> 5] |= (1 << (index & 31));
             entityMeta.push({
                 eid,
                 type: getEntityType(eid),
@@ -64,7 +60,6 @@ export class SparseSnapshotCodec {
         return {
             frame,
             seq,
-            entityMask,
             entityMeta,
             componentData,
             entityCount: sortedEids.length,
@@ -119,8 +114,6 @@ export class SparseSnapshotCodec {
      */
     getSize(snapshot) {
         let size = 0;
-        // Entity mask
-        size += snapshot.entityMask.byteLength;
         // Entity metadata (rough estimate)
         size += snapshot.entityMeta.length * 32; // ~32 bytes per entity meta
         // Component data
@@ -150,13 +143,11 @@ export class SparseSnapshotCodec {
         const metaLength = metaBytes.length;
         // Calculate component data size
         let componentDataSize = 0;
-        const componentSizes = [];
         for (const buffer of snapshot.componentData.values()) {
-            componentSizes.push(buffer.byteLength);
             componentDataSize += buffer.byteLength;
         }
-        // Total: 4 (meta length) + meta + 4 (mask length) + mask + component data
-        const totalSize = 4 + metaLength + 4 + snapshot.entityMask.byteLength + componentDataSize;
+        // Total: 4 (meta length) + meta + component data
+        const totalSize = 4 + metaLength + componentDataSize;
         const buffer = new ArrayBuffer(totalSize);
         const view = new DataView(buffer);
         let offset = 0;
@@ -165,11 +156,6 @@ export class SparseSnapshotCodec {
         offset += 4;
         new Uint8Array(buffer, offset, metaLength).set(metaBytes);
         offset += metaLength;
-        // Write entity mask
-        view.setUint32(offset, snapshot.entityMask.byteLength, true);
-        offset += 4;
-        new Uint8Array(buffer, offset, snapshot.entityMask.byteLength).set(new Uint8Array(snapshot.entityMask.buffer));
-        offset += snapshot.entityMask.byteLength;
         // Write component data
         for (const compBuffer of snapshot.componentData.values()) {
             new Uint8Array(buffer, offset, compBuffer.byteLength).set(new Uint8Array(compBuffer));
@@ -190,11 +176,6 @@ export class SparseSnapshotCodec {
         const metaJson = new TextDecoder().decode(metaBytes);
         const meta = JSON.parse(metaJson);
         offset += metaLength;
-        // Read entity mask
-        const maskLength = view.getUint32(offset, true);
-        offset += 4;
-        const entityMask = new Uint32Array(buffer.slice(offset, offset + maskLength));
-        offset += maskLength;
         // Read component data
         const componentData = new Map();
         const allComponents = getAllComponents();
@@ -215,7 +196,6 @@ export class SparseSnapshotCodec {
         return {
             frame: meta.frame,
             seq: meta.seq,
-            entityMask,
             entityMeta: meta.entityMeta,
             componentData,
             entityCount: meta.entityMeta.length,

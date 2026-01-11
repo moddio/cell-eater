@@ -42,12 +42,42 @@ game.connect('my-room', {
 </script>
 ```
 
+## Game API
+
+The Game class provides three ways to start your game:
+
+### Mode 1: Online-only (default)
+```javascript
+game.connect(roomId, {
+    onRoomCreate() { spawnFood(); },
+    onConnect(clientId) { spawnPlayer(clientId); }
+});
+// Auto-starts locally, then connects to server
+```
+
+### Mode 2: Local-first with seamless transition
+```javascript
+game.init({
+    onRoomCreate() { spawnFood(); },
+    onConnect(clientId) { spawnPlayer(clientId); }
+});
+game.start();  // Play locally immediately
+// Later, when user clicks "Go Online"...
+game.connect(roomId);  // Server state replaces local state
+```
+
+### Mode 3: Offline only
+```javascript
+game.init({ onRoomCreate, onConnect });
+game.start();  // Never call connect() - pure single-player
+```
+
 ## How It Works
 
-1. Player presses a key → input captured locally
-2. Input sent to server → server assigns sequence number
-3. Broadcast to all clients → everyone gets same inputs in same order
-4. Same simulation runs → identical state everywhere
+1. Player presses a key - input captured locally
+2. Input sent to server - server assigns sequence number
+3. Broadcast to all clients - everyone gets same inputs in same order
+4. Same simulation runs - identical state everywhere
 
 The server never runs game logic. It's just a message broker. Determinism ensures all clients agree.
 

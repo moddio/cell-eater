@@ -76,8 +76,6 @@ export declare class Game {
     private connectedRoomId;
     /** Local client ID (string form) */
     private localClientIdStr;
-    /** All connected client IDs (in join order for determinism) */
-    private connectedClients;
     /** Authority client (first joiner, sends snapshots) */
     private authorityClientId;
     /** Current server frame */
@@ -92,6 +90,10 @@ export declare class Game {
     private gameLoop;
     /** Deferred snapshot flag (send after tick completes) */
     private pendingSnapshotUpload;
+    /** Flag: local room was created before server connected (for local-first) */
+    private localRoomCreated;
+    /** Flag: game has been started (via start() or connect()) */
+    private gameStarted;
     /** Last snapshot info for debug UI */
     private lastSnapshotHash;
     private lastSnapshotFrame;
@@ -134,9 +136,9 @@ export declare class Game {
     /** Hash comparison stats (rolling window) */
     private hashChecksPassed;
     private hashChecksFailed;
-    /** Previous frame's state hash (for desync comparison) */
-    private prevStateHash;
-    private prevStateHashFrame;
+    /** State hash history for desync comparison (frame -> hash) */
+    private stateHashHistory;
+    private readonly HASH_HISTORY_SIZE;
     /** String to ID mapping for clientIds */
     private clientIdToNum;
     private numToClientId;
@@ -273,9 +275,72 @@ export declare class Game {
      */
     reset(): void;
     /**
-     * Connect to a multiplayer room.
+     * Configure the game with callbacks.
+     *
+     * This method stores callbacks but does NOT start the game.
+     * Use this when you want to configure callbacks separately from starting.
+     *
+     * @example
+     * game.init({
+     *     onRoomCreate() { spawnFood(); },
+     *     onConnect(clientId) { spawnPlayer(clientId); }
+     * });
+     * game.start();  // Start locally
+     * // Later...
+     * game.connect(roomId);  // Connect to server
+     *
+     * @param callbacks Game lifecycle callbacks
+     * @returns The game instance for chaining
      */
-    connect(roomId: string, callbacks: GameCallbacks, options?: ConnectOptions): Promise<void>;
+    init(callbacks: GameCallbacks): this;
+    /**
+     * Start the game locally (offline mode).
+     *
+     * Use this for single-player or when you want to start the game
+     * before connecting to a server. The game will simulate locally
+     * at the configured tick rate.
+     *
+     * If you later call connect(), the local state will be REPLACED
+     * by the server state (clean handoff, no merge).
+     *
+     * @param callbacks Optional callbacks (onTick, render, etc.). If provided,
+     *                  these are merged with any callbacks set via init().
+     */
+    start(callbacks?: GameCallbacks): void;
+    /**
+     * Connect to a multiplayer room.
+     *
+     * Can be called in several ways:
+     *
+     * **Mode 1: Online-only (callbacks in connect)**
+     * ```js
+     * game.connect(roomId, {
+     *     onRoomCreate() { spawnFood(); },
+     *     onConnect(clientId) { spawnPlayer(clientId); }
+     * });
+     * ```
+     * This auto-starts locally, then connects to server.
+     *
+     * **Mode 2: Local-first with seamless transition**
+     * ```js
+     * game.init({ onRoomCreate, onConnect });
+     * game.start();  // Play locally immediately
+     * game.connect(roomId);  // Server state replaces local state
+     * ```
+     *
+     * **Mode 3: Using options parameter**
+     * ```js
+     * game.connect(roomId, { onRoomCreate, onConnect }, { nodeUrl: '...' });
+     * ```
+     *
+     * When called after start(), the local state is FLUSHED and REPLACED with server state.
+     * This is a clean handoff - no state merging.
+     *
+     * @param roomId The room to connect to
+     * @param callbacksOrOptions Either GameCallbacks or ConnectOptions
+     * @param options ConnectOptions (only if second param is callbacks)
+     */
+    connect(roomId: string, callbacksOrOptions?: GameCallbacks | ConnectOptions, options?: ConnectOptions): Promise<void>;
     /**
      * Handle reliability score update from server.
      */
@@ -352,7 +417,10 @@ export declare class Game {
      */
     getDivergenceReplay(): void;
     /**
-     * Start the render loop.
+     * Start the game loop (render + local simulation when offline).
+     *
+     * When connected to server: server TICK messages drive simulation via handleTick().
+     * When offline: simulation ticks locally at tickRate.
      */
     private startGameLoop;
     /**
@@ -360,7 +428,13 @@ export declare class Game {
      */
     private stopGameLoop;
     /**
-     * Handle disconnect.
+     * Handle disconnect from server.
+     *
+     * Fires the onDisconnect callback with no clientId (network disconnect, not player leave).
+     * The game loop continues running - the game can decide how to handle this:
+     * - Continue playing locally (single-player mode)
+     * - Show a reconnect UI
+     * - Pause the game
      */
     private handleDisconnect;
     /**
@@ -376,6 +450,10 @@ export declare class Game {
      * Check if connected.
      */
     isConnected(): boolean;
+    /**
+     * Check if game has been started (via start() or connect()).
+     */
+    isStarted(): boolean;
     /**
      * Get current frame.
      */
@@ -393,9 +471,16 @@ export declare class Game {
      */
     sendInput(input: any): void;
     /**
-     * Leave current room.
+     * Leave current room and stop the game.
      */
     leaveRoom(): void;
+    /**
+     * Stop the game loop.
+     *
+     * Use this to pause or end the game. The game state is preserved.
+     * Call start() or connect() to resume.
+     */
+    stop(): void;
     /**
      * Get local client ID.
      */
