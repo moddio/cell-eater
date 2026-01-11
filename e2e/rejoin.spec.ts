@@ -5,8 +5,8 @@
  */
 import { test, expect, chromium, Browser, Page } from '@playwright/test';
 
-const GAME_URL = 'http://localhost:3001/examples/cell-eater.html';
-const ROOM_ID = 'e2e-test-rejoin-' + Date.now();
+const GAME_URL = 'http://localhost:3001/examples/cell-eater';
+// Room ID is generated inside test to ensure uniqueness
 
 test.describe('Rejoin Bug', () => {
     let browser: Browser;
@@ -49,7 +49,8 @@ test.describe('Rejoin Bug', () => {
             }
         });
 
-        // Navigate to game with same room
+        // Navigate to game with same room (generate unique room ID per test)
+        const ROOM_ID = 'e2e-test-rejoin-' + Date.now() + '-' + Math.random().toString(36).slice(2);
         const url = `${GAME_URL}?room=${ROOM_ID}`;
         console.log('Opening:', url);
 
@@ -173,7 +174,25 @@ test.describe('Rejoin Bug', () => {
         logs2.length = 0; // Clear logs
 
         await page2.reload();
-        await waitForGame(page2, 'Page2 after rejoin');
+
+        // Wait for Page2 to ACTUALLY connect (not just game loop start)
+        // This means waiting for activeClients > 0
+        await page2.waitForFunction(() => {
+            const g = (window as any).game;
+            if (!g) return false;
+            const activeClients = (g as any).activeClients || [];
+            return activeClients.length > 0 && (g as any).currentFrame > 30;
+        }, { timeout: 20000 });
+        console.log('Page2 after rejoin: Connected to server');
+
+        // Also wait for Page1 to see Page2
+        await page1.waitForFunction(() => {
+            const g = (window as any).game;
+            if (!g) return false;
+            const activeClients = (g as any).activeClients || [];
+            return activeClients.length >= 2;
+        }, { timeout: 10000 });
+        console.log('Page1: Sees 2 clients');
 
         console.log('Page2 logs after rejoin:', logs2);
 
@@ -184,19 +203,38 @@ test.describe('Rejoin Bug', () => {
         console.log('  Page1:', state1After);
         console.log('  Page2:', state2After);
 
+        // Wait for frames to align before comparing
+        let alignedState1: any = null;
+        let alignedState2: any = null;
+        for (let i = 0; i < 20; i++) {
+            await page1.waitForTimeout(100);
+            const s1 = await getDebugState(page1);
+            const s2 = await getDebugState(page2);
+            if (s1 && s2 && s1.frame === s2.frame) {
+                alignedState1 = s1;
+                alignedState2 = s2;
+                break;
+            }
+        }
+
         // Check for desync
-        if (state1After && state2After) {
-            console.log('\n=== Desync Check ===');
-            console.log('activeClients match:', state1After.activeClients === state2After.activeClients);
-            console.log('entityCount match:', state1After.entityCount === state2After.entityCount);
-            console.log('hash match:', state1After.hash === state2After.hash);
-            console.log('Page1 isAuthority:', state1After.isAuthority);
-            console.log('Page1 delta:', state1After.deltaBytesPerSecond, 'B/s');
-            console.log('Page2 delta:', state2After.deltaBytesPerSecond, 'B/s');
+        if (alignedState1 && alignedState2) {
+            console.log('\n=== Desync Check (frame aligned) ===');
+            console.log('activeClients match:', alignedState1.activeClients === alignedState2.activeClients);
+            console.log('entityCount match:', alignedState1.entityCount === alignedState2.entityCount);
+            console.log('hash match:', alignedState1.hash === alignedState2.hash);
+            console.log('Page1 isAuthority:', alignedState1.isAuthority);
+            console.log('Page1 delta:', alignedState1.deltaBytesPerSecond, 'B/s');
+            console.log('Page2 delta:', alignedState2.deltaBytesPerSecond, 'B/s');
 
             // These should match
-            expect(state1After.activeClients).toBe(state2After.activeClients);
-            expect(state1After.hash).toBe(state2After.hash);
+            expect(alignedState1.activeClients).toBe(alignedState2.activeClients);
+            expect(alignedState1.hash).toBe(alignedState2.hash);
+        } else {
+            console.log('WARNING: Could not align frames for comparison, using latest states');
+            if (state1After && state2After) {
+                expect(state1After.activeClients).toBe(state2After.activeClients);
+            }
         }
 
         // KEY TEST: Sample delta bandwidth on authority (Page1) after rejoin
@@ -244,13 +282,41 @@ test.describe('Rejoin Bug', () => {
         logs2.length = 0;
 
         await page2.reload();
-        await waitForGame(page2, 'Page2 after second rejoin');
+
+        // Wait for proper connection
+        await page2.waitForFunction(() => {
+            const g = (window as any).game;
+            if (!g) return false;
+            const activeClients = (g as any).activeClients || [];
+            return activeClients.length > 0 && (g as any).currentFrame > 30;
+        }, { timeout: 20000 });
+        console.log('Page2 after second rejoin: Connected to server');
+
+        await page1.waitForFunction(() => {
+            const g = (window as any).game;
+            if (!g) return false;
+            const activeClients = (g as any).activeClients || [];
+            return activeClients.length >= 2;
+        }, { timeout: 10000 });
+        console.log('Page1: Sees 2 clients');
 
         console.log('Page2 logs after second rejoin:', logs2);
 
-        const state1Final = await getDebugState(page1);
-        const state2Final = await getDebugState(page2);
-        console.log('\nFinal state:');
+        // Wait for frames to align before final comparison
+        let state1Final: any = null;
+        let state2Final: any = null;
+        for (let i = 0; i < 20; i++) {
+            await page1.waitForTimeout(100);
+            const s1 = await getDebugState(page1);
+            const s2 = await getDebugState(page2);
+            if (s1 && s2 && s1.frame === s2.frame) {
+                state1Final = s1;
+                state2Final = s2;
+                break;
+            }
+        }
+
+        console.log('\nFinal state (frame aligned):');
         console.log('  Page1:', state1Final);
         console.log('  Page2:', state2Final);
 

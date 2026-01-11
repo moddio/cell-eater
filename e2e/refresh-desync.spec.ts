@@ -365,24 +365,39 @@ test.describe('Refresh Causes Permanent Desync Bug', () => {
         await page2.screenshot({ path: 'test-results/refresh-desync-page2-final.png' });
 
         // ========================================
-        // FINAL STATE CHECK
+        // FINAL STATE CHECK (wait for frames to align)
         // ========================================
         console.log('\n=== FINAL STATE ===');
-        const state1Final = await getState(page1);
-        const state2Final = await getState(page2);
-        console.log('  Page1:', state1Final);
-        console.log('  Page2:', state2Final);
+
+        // Wait for frames to align before comparing
+        let finalHashMatch = false;
+        let finalEntityDiff = 0;
+        let state1Final: any = null;
+        let state2Final: any = null;
+
+        for (let attempt = 0; attempt < 10; attempt++) {
+            await page1.waitForTimeout(200);
+            state1Final = await getState(page1);
+            state2Final = await getState(page2);
+
+            if (state1Final && state2Final && state1Final.frame === state2Final.frame) {
+                finalHashMatch = state1Final.hash === state2Final.hash;
+                finalEntityDiff = Math.abs(state1Final.entityCount - state2Final.entityCount);
+
+                console.log(`  Aligned at frame ${state1Final.frame}:`);
+                console.log('  Page1:', state1Final);
+                console.log('  Page2:', state2Final);
+                break;
+            }
+        }
 
         expect(state1Final).not.toBeNull();
         expect(state2Final).not.toBeNull();
 
         if (state1Final && state2Final) {
-            const finalHashMatch = state1Final.hash === state2Final.hash;
-            const finalEntityDiff = Math.abs(state1Final.entityCount - state2Final.entityCount);
-
             console.log('\n=== FINAL COMPARISON ===');
-            console.log(`  Page1: ${state1Final.entityCount} entities, hash ${state1Final.hashHex}`);
-            console.log(`  Page2: ${state2Final.entityCount} entities, hash ${state2Final.hashHex}`);
+            console.log(`  Page1: frame=${state1Final.frame} ${state1Final.entityCount} entities, hash ${state1Final.hashHex}`);
+            console.log(`  Page2: frame=${state2Final.frame} ${state2Final.entityCount} entities, hash ${state2Final.hashHex}`);
             console.log(`  Hash match: ${finalHashMatch}`);
             console.log(`  Entity diff: ${finalEntityDiff}`);
 

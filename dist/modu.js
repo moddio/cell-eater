@@ -4728,6 +4728,7 @@ var Game = class {
     }
     this.clientsWithEntitiesFromSnapshot.clear();
     this.activeClients.length = 0;
+    const network = typeof window !== "undefined" ? window.moduNetwork : void 0;
     for (const entity of this.world.query(Player)) {
       const player = entity.get(Player);
       if (player.clientId !== 0) {
@@ -4736,6 +4737,12 @@ var Game = class {
           this.clientsWithEntitiesFromSnapshot.add(clientIdStr);
           if (!this.activeClients.includes(clientIdStr)) {
             this.activeClients.push(clientIdStr);
+          }
+          if (network?.registerClientId) {
+            network.registerClientId(clientIdStr);
+            if (DEBUG_NETWORK) {
+              console.log(`[ecs] Registered clientId ${clientIdStr.slice(0, 8)} from snapshot entity`);
+            }
           }
           if (DEBUG_NETWORK) {
             console.log(`[ecs] Snapshot has entity for client ${clientIdStr.slice(0, 8)}`);
@@ -6014,7 +6021,7 @@ function disableDeterminismGuard() {
 }
 
 // src/version.ts
-var ENGINE_VERSION = "b0ef19f";
+var ENGINE_VERSION = "cdb32e0";
 
 // src/plugins/debug-ui.ts
 var debugDiv = null;

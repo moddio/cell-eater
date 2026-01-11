@@ -1525,6 +1525,8 @@ export class Game {
         // CRITICAL: Clear activeClients before populating from snapshot
         // Without this, stale clients remain after resync (e.g., client left but snapshot doesn't include them)
         this.activeClients.length = 0;
+        // Get network SDK for registering clientIds (needed for TICK decoding)
+        const network = typeof window !== 'undefined' ? window.moduNetwork : undefined;
         for (const entity of this.world.query(Player)) {
             const player = entity.get(Player);
             if (player.clientId !== 0) {
@@ -1535,6 +1537,16 @@ export class Game {
                     // Without this, partition assignment differs between authority and late joiner
                     if (!this.activeClients.includes(clientIdStr)) {
                         this.activeClients.push(clientIdStr);
+                    }
+                    // CRITICAL FIX: Register clientId with network SDK for TICK decoding
+                    // Without this, late joiners can't decode inputs from clients
+                    // whose JOIN event was already included in the snapshot.
+                    // The SDK uses a hash-to-clientId map for binary TICK decoding.
+                    if (network?.registerClientId) {
+                        network.registerClientId(clientIdStr);
+                        if (DEBUG_NETWORK) {
+                            console.log(`[ecs] Registered clientId ${clientIdStr.slice(0, 8)} from snapshot entity`);
+                        }
                     }
                     if (DEBUG_NETWORK) {
                         console.log(`[ecs] Snapshot has entity for client ${clientIdStr.slice(0, 8)}`);
