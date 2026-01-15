@@ -359,6 +359,11 @@ export declare class Game {
      * Log detailed diff between local state and authority snapshot.
      * Called during resync to help diagnose what went wrong.
      */
+    /**
+     * Dump local state for debugging when desync is detected.
+     * Compare output between browser tabs to find differences.
+     */
+    private dumpLocalStateForDebug;
     private logDesyncDiff;
     /**
      * Handle initial connection (first join or late join).

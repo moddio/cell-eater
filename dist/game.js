@@ -630,6 +630,8 @@ export class Game {
                 console.error(`[state-sync] DESYNC DETECTED at frame ${frame}`);
                 console.error(`  Local hash:    ${localHash.toString(16).padStart(8, '0')}`);
                 console.error(`  Majority hash: ${majorityHash.toString(16).padStart(8, '0')}`);
+                // Dump local state for debugging - compare between browser tabs
+                this.dumpLocalStateForDebug(frame);
                 console.error(`  Requesting resync from authority...`);
                 // Request full state from authority for recovery
                 if (this.connection?.requestResync) {
@@ -765,6 +767,50 @@ export class Game {
      * Log detailed diff between local state and authority snapshot.
      * Called during resync to help diagnose what went wrong.
      */
+    /**
+     * Dump local state for debugging when desync is detected.
+     * Compare output between browser tabs to find differences.
+     */
+    dumpLocalStateForDebug(frame) {
+        console.group(`[DESYNC DEBUG] Local state at frame ${frame}`);
+        console.log(`Entity count: ${this.world.getAllEntities().length}`);
+        // Group entities by type
+        const byType = new Map();
+        for (const entity of this.world.getAllEntities()) {
+            if (!byType.has(entity.type))
+                byType.set(entity.type, []);
+            byType.get(entity.type).push(entity);
+        }
+        // Log counts by type
+        console.log('Entity counts by type:');
+        for (const [type, entities] of byType) {
+            console.log(`  ${type}: ${entities.length}`);
+        }
+        // Log first few entities of dynamic types with component values
+        const dynamicTypes = ['furniture', 'player'];
+        for (const type of dynamicTypes) {
+            const entities = byType.get(type) || [];
+            if (entities.length === 0)
+                continue;
+            console.group(`${type} entities (first 5):`);
+            for (let i = 0; i < Math.min(5, entities.length); i++) {
+                const e = entities[i];
+                const data = { eid: e.eid };
+                for (const comp of e.getComponents()) {
+                    if (!comp.sync)
+                        continue;
+                    const index = e.eid & 0xFFFF;
+                    for (const field of comp.fieldNames) {
+                        const key = `${comp.name}.${field}`;
+                        data[key] = comp.storage.fields[field][index];
+                    }
+                }
+                console.log(`  [${i}]`, JSON.stringify(data));
+            }
+            console.groupEnd();
+        }
+        console.groupEnd();
+    }
     logDesyncDiff(serverSnapshot, serverFrame) {
         const lines = [];
         const diffs = [];
@@ -1217,12 +1263,7 @@ export class Game {
             const rngState = saveRandomState();
             // Call callback ONLY if this client doesn't already have an entity from snapshot
             // This prevents duplicate entity creation during catchup
-            if (this.clientsWithEntitiesFromSnapshot.has(clientId)) {
-                if (DEBUG_NETWORK) {
-                    console.log(`[ecs] Skipping onConnect for ${clientId.slice(0, 8)} - already has entity from snapshot`);
-                }
-            }
-            else {
+            if (!this.clientsWithEntitiesFromSnapshot.has(clientId)) {
                 this.callbacks.onConnect?.(clientId);
             }
             // Restore RNG state - callback's random usage doesn't affect global simulation RNG
@@ -1390,13 +1431,19 @@ export class Game {
         for (const entity of this.world.getAllEntities()) {
             const index = entity.eid & INDEX_MASK;
             const type = entity.type;
+            // Get syncFields for this type (check if syncNone)
+            const entityDef = this.world.getEntityDef(type);
+            // CRITICAL: Skip syncNone entities entirely (syncFields = empty array)
+            // These are client-only entities that should NOT be in snapshots
+            if (entityDef?.syncFields && entityDef.syncFields.length === 0) {
+                continue; // Skip this entity
+            }
             // Assign type index if new type
             if (!typeToIndex.has(type)) {
                 const typeIdx = types.length;
                 types.push(type);
                 typeToIndex.set(type, typeIdx);
                 // Get syncFields for this type (if defined)
-                const entityDef = this.world.getEntityDef(type);
                 const syncFieldsSet = entityDef?.syncFields
                     ? new Set(entityDef.syncFields)
                     : null;
@@ -1629,8 +1676,6 @@ export class Game {
         if (snapshot.inputState) {
             this.world.setInputState(snapshot.inputState);
         }
-        // Always log snapshot loading for debugging
-        console.log(`[ecs-debug] Snapshot loaded: entities=${this.world.getAllEntities().length} activeClients=[${this.activeClients.join(',')}]`);
         if (DEBUG_NETWORK) {
             console.log(`[ecs] Snapshot loaded: ${this.world.getAllEntities().length} entities, hash=${this.getStateHash()}, activeClients=${this.activeClients.length}`);
             // Debug: log first restored entity
@@ -1664,11 +1709,7 @@ export class Game {
         const snapshot = this.getNetworkSnapshot();
         const hash = this.world.getStateHash();
         const binary = encode({ snapshot, hash });
-        // DEBUG: Log snapshot size breakdown
-        const entitiesSize = encode(snapshot.entities).length;
-        const schemaSize = encode(snapshot.schema).length;
         const entityCount = snapshot.entities.length;
-        console.log(`[SNAPSHOT-SIZE] Total: ${binary.length}B | entities: ${entitiesSize}B (${entityCount}) | schema: ${schemaSize}B`);
         if (DEBUG_NETWORK) {
             console.log(`[ecs] Sending snapshot (${source}): ${binary.length} bytes, ${entityCount} entities, hash=${hash}`);
         }

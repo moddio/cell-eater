@@ -178,6 +178,7 @@ export class Physics2DSystem {
         body = createBody2D(bodyType, shape, transform.x, transform.y);
         body.angle = toFixed(transform.angle);
         body.linearVelocity = { x: toFixed(bodyData.vx), y: toFixed(bodyData.vy) };
+        body.angularVelocity = toFixed(bodyData.angularVelocity);
         body.isSensor = bodyData.isSensor;
         // CRITICAL: All new bodies start awake for determinism
         // Without this, late joiners would have awake bodies while existing clients
@@ -252,6 +253,8 @@ export class Physics2DSystem {
             const newVelY = toFixed(bodyData.vy);
             body.linearVelocity.x = newVelX;
             body.linearVelocity.y = newVelY;
+            // Sync angular velocity
+            body.angularVelocity = toFixed(bodyData.angularVelocity);
             // Wake up body if velocity is non-zero (prevents sleeping bodies from ignoring velocity)
             if (newVelX !== 0 || newVelY !== 0) {
                 body.isSleeping = false;
@@ -295,9 +298,10 @@ export class Physics2DSystem {
             transform.x = toFloat(body.position.x);
             transform.y = toFloat(body.position.y);
             transform.angle = toFloat(body.angle);
-            // Sync velocity
+            // Sync velocity (linear and angular)
             bodyData.vx = toFloat(body.linearVelocity.x);
             bodyData.vy = toFloat(body.linearVelocity.y);
+            bodyData.angularVelocity = toFloat(body.angularVelocity);
         }
     }
     /**
@@ -393,7 +397,9 @@ export class Physics2DSystem {
             return;
         // CRITICAL: If no bodies exist yet (e.g., after clear()), we need to create them first
         // Otherwise this sync does nothing and bodies get created with possibly wrong state
-        const entitiesWithBody2D = [...this.world.query(Body2D)];
+        // CRITICAL: Sort by entity ID to ensure deterministic body creation order
+        // Without sorting, iteration order may differ between room creator and late joiners
+        const entitiesWithBody2D = [...this.world.query(Body2D)].sort((a, b) => a.eid - b.eid);
         if (this.entityToBody.size === 0 && entitiesWithBody2D.length > 0) {
             for (const entity of entitiesWithBody2D) {
                 this.ensureBody(entity);
@@ -410,9 +416,10 @@ export class Physics2DSystem {
             body.position.x = toFixed(transform.x);
             body.position.y = toFixed(transform.y);
             body.angle = toFixed(transform.angle);
-            // Sync velocity from Body2D
+            // Sync velocity (linear and angular) from Body2D
             body.linearVelocity.x = toFixed(bodyData.vx);
             body.linearVelocity.y = toFixed(bodyData.vy);
+            body.angularVelocity = toFixed(bodyData.angularVelocity);
             // Wake the body to ensure it's active
             body.isSleeping = false;
             body.sleepFrames = 0;

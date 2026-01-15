@@ -1,4 +1,4 @@
-/* Modu Engine - Built: 2026-01-15T14:25:22.792Z - Commit: 0e6f869 */
+/* Modu Engine - Built: 2026-01-15T20:34:34.151Z - Commit: 470cff0 */
 // Modu Engine + Network SDK Combined Bundle
 "use strict";
 var moduNetwork = (() => {
@@ -4457,9 +4457,19 @@ var Modu = (() => {
      */
     getStateHash() {
       const sortedEids = Array.from(this.activeEntities).sort((a, b) => a - b);
+      const syncedEids = sortedEids.filter((eid) => {
+        const typeName = this.entityTypes.get(eid);
+        if (!typeName)
+          return true;
+        const entityDef = this.entityDefs.get(typeName);
+        if (entityDef?.syncFields && entityDef.syncFields.length === 0) {
+          return false;
+        }
+        return true;
+      });
       let hash = 0;
-      hash = xxhash32Combine(hash, sortedEids.length);
-      for (const eid of sortedEids) {
+      hash = xxhash32Combine(hash, syncedEids.length);
+      for (const eid of syncedEids) {
         const index = eid & INDEX_MASK;
         const components = this.entityComponents.get(eid) || [];
         hash = xxhash32Combine(hash, eid >>> 0);
@@ -5530,6 +5540,7 @@ var Modu = (() => {
           console.error(`[state-sync] DESYNC DETECTED at frame ${frame}`);
           console.error(`  Local hash:    ${localHash.toString(16).padStart(8, "0")}`);
           console.error(`  Majority hash: ${majorityHash.toString(16).padStart(8, "0")}`);
+          this.dumpLocalStateForDebug(frame);
           console.error(`  Requesting resync from authority...`);
           if (this.connection?.requestResync) {
             this.resyncPending = true;
@@ -5624,6 +5635,47 @@ var Modu = (() => {
      * Log detailed diff between local state and authority snapshot.
      * Called during resync to help diagnose what went wrong.
      */
+    /**
+     * Dump local state for debugging when desync is detected.
+     * Compare output between browser tabs to find differences.
+     */
+    dumpLocalStateForDebug(frame) {
+      console.group(`[DESYNC DEBUG] Local state at frame ${frame}`);
+      console.log(`Entity count: ${this.world.getAllEntities().length}`);
+      const byType = /* @__PURE__ */ new Map();
+      for (const entity of this.world.getAllEntities()) {
+        if (!byType.has(entity.type))
+          byType.set(entity.type, []);
+        byType.get(entity.type).push(entity);
+      }
+      console.log("Entity counts by type:");
+      for (const [type, entities] of byType) {
+        console.log(`  ${type}: ${entities.length}`);
+      }
+      const dynamicTypes = ["furniture", "player"];
+      for (const type of dynamicTypes) {
+        const entities = byType.get(type) || [];
+        if (entities.length === 0)
+          continue;
+        console.group(`${type} entities (first 5):`);
+        for (let i = 0; i < Math.min(5, entities.length); i++) {
+          const e = entities[i];
+          const data = { eid: e.eid };
+          for (const comp of e.getComponents()) {
+            if (!comp.sync)
+              continue;
+            const index = e.eid & 65535;
+            for (const field of comp.fieldNames) {
+              const key = `${comp.name}.${field}`;
+              data[key] = comp.storage.fields[field][index];
+            }
+          }
+          console.log(`  [${i}]`, JSON.stringify(data));
+        }
+        console.groupEnd();
+      }
+      console.groupEnd();
+    }
     logDesyncDiff(serverSnapshot, serverFrame) {
       const lines = [];
       const diffs = [];
@@ -5987,11 +6039,7 @@ var Modu = (() => {
           console.log(`[ecs] Join: ${clientId.slice(0, 8)}, authority=${this.authorityClientId?.slice(0, 8)}`);
         }
         const rngState = saveRandomState();
-        if (this.clientsWithEntitiesFromSnapshot.has(clientId)) {
-          if (DEBUG_NETWORK) {
-            console.log(`[ecs] Skipping onConnect for ${clientId.slice(0, 8)} - already has entity from snapshot`);
-          }
-        } else {
+        if (!this.clientsWithEntitiesFromSnapshot.has(clientId)) {
           this.callbacks.onConnect?.(clientId);
         }
         loadRandomState(rngState);
@@ -6116,11 +6164,14 @@ var Modu = (() => {
       for (const entity of this.world.getAllEntities()) {
         const index = entity.eid & INDEX_MASK;
         const type = entity.type;
+        const entityDef = this.world.getEntityDef(type);
+        if (entityDef?.syncFields && entityDef.syncFields.length === 0) {
+          continue;
+        }
         if (!typeToIndex.has(type)) {
           const typeIdx = types.length;
           types.push(type);
           typeToIndex.set(type, typeIdx);
-          const entityDef = this.world.getEntityDef(type);
           const syncFieldsSet2 = entityDef?.syncFields ? new Set(entityDef.syncFields) : null;
           typeSyncFields.set(type, syncFieldsSet2);
           const typeSchema = [];
@@ -6293,7 +6344,6 @@ var Modu = (() => {
       if (snapshot.inputState) {
         this.world.setInputState(snapshot.inputState);
       }
-      console.log(`[ecs-debug] Snapshot loaded: entities=${this.world.getAllEntities().length} activeClients=[${this.activeClients.join(",")}]`);
       if (DEBUG_NETWORK) {
         console.log(`[ecs] Snapshot loaded: ${this.world.getAllEntities().length} entities, hash=${this.getStateHash()}, activeClients=${this.activeClients.length}`);
         const firstEntity = this.world.getAllEntities()[0];
@@ -6322,10 +6372,7 @@ var Modu = (() => {
       const snapshot = this.getNetworkSnapshot();
       const hash = this.world.getStateHash();
       const binary = encode({ snapshot, hash });
-      const entitiesSize = encode(snapshot.entities).length;
-      const schemaSize = encode(snapshot.schema).length;
       const entityCount = snapshot.entities.length;
-      console.log(`[SNAPSHOT-SIZE] Total: ${binary.length}B | entities: ${entitiesSize}B (${entityCount}) | schema: ${schemaSize}B`);
       if (DEBUG_NETWORK) {
         console.log(`[ecs] Sending snapshot (${source}): ${binary.length} bytes, ${entityCount} entities, hash=${hash}`);
       }
@@ -7557,7 +7604,7 @@ var Modu = (() => {
   }
 
   // src/version.ts
-  var ENGINE_VERSION = "0e6f869";
+  var ENGINE_VERSION = "470cff0";
 
   // src/plugins/debug-ui.ts
   var debugDiv = null;
@@ -9218,6 +9265,7 @@ var Modu = (() => {
       body = createBody2D(bodyType, shape, transform.x, transform.y);
       body.angle = toFixed(transform.angle);
       body.linearVelocity = { x: toFixed(bodyData.vx), y: toFixed(bodyData.vy) };
+      body.angularVelocity = toFixed(bodyData.angularVelocity);
       body.isSensor = bodyData.isSensor;
       body.isSleeping = false;
       body.sleepFrames = 0;
@@ -9278,6 +9326,7 @@ var Modu = (() => {
         const newVelY = toFixed(bodyData.vy);
         body.linearVelocity.x = newVelX;
         body.linearVelocity.y = newVelY;
+        body.angularVelocity = toFixed(bodyData.angularVelocity);
         if (newVelX !== 0 || newVelY !== 0) {
           body.isSleeping = false;
           body.sleepFrames = 0;
@@ -9319,6 +9368,7 @@ var Modu = (() => {
         transform.angle = toFloat(body.angle);
         bodyData.vx = toFloat(body.linearVelocity.x);
         bodyData.vy = toFloat(body.linearVelocity.y);
+        bodyData.angularVelocity = toFloat(body.angularVelocity);
       }
     }
     /**
@@ -9406,7 +9456,7 @@ var Modu = (() => {
     syncAllFromComponents() {
       if (!this.world)
         return;
-      const entitiesWithBody2D = [...this.world.query(Body2D)];
+      const entitiesWithBody2D = [...this.world.query(Body2D)].sort((a, b) => a.eid - b.eid);
       if (this.entityToBody.size === 0 && entitiesWithBody2D.length > 0) {
         for (const entity of entitiesWithBody2D) {
           this.ensureBody(entity);
@@ -9423,6 +9473,7 @@ var Modu = (() => {
         body.angle = toFixed(transform.angle);
         body.linearVelocity.x = toFixed(bodyData.vx);
         body.linearVelocity.y = toFixed(bodyData.vy);
+        body.angularVelocity = toFixed(bodyData.angularVelocity);
         body.isSleeping = false;
         body.sleepFrames = 0;
       }

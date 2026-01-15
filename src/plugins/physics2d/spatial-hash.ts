@@ -13,7 +13,7 @@
  */
 
 import { RigidBody2D } from './rigid-body';
-import { Fixed, toFloat } from '../../math/fixed';
+import { Fixed, toFloat, dSqrt } from '../../math/fixed';
 import { Shape2DType, CircleShape, BoxShape2D } from './shapes';
 
 // ============================================
@@ -28,7 +28,7 @@ function getBodyRadius(body: RigidBody2D): number {
         // Use diagonal half-length as radius
         const hw = toFloat(box.halfWidth);
         const hh = toFloat(box.halfHeight);
-        return Math.sqrt(hw * hw + hh * hh);
+        return dSqrt(hw * hw + hh * hh);
     }
 }
 

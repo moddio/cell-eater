@@ -907,10 +907,22 @@ export class World {
     getStateHash() {
         // Get all entity data in deterministic order
         const sortedEids = Array.from(this.activeEntities).sort((a, b) => a - b);
+        // Filter out syncNone entities (client-only, should not affect hash)
+        const syncedEids = sortedEids.filter(eid => {
+            const typeName = this.entityTypes.get(eid);
+            if (!typeName)
+                return true; // Include if no type (shouldn't happen)
+            const entityDef = this.entityDefs.get(typeName);
+            // Skip if syncFields is empty array (syncNone)
+            if (entityDef?.syncFields && entityDef.syncFields.length === 0) {
+                return false;
+            }
+            return true;
+        });
         let hash = 0;
-        // Hash entity count first
-        hash = xxhash32Combine(hash, sortedEids.length);
-        for (const eid of sortedEids) {
+        // Hash entity count first (only synced entities)
+        hash = xxhash32Combine(hash, syncedEids.length);
+        for (const eid of syncedEids) {
             const index = eid & INDEX_MASK;
             const components = this.entityComponents.get(eid) || [];
             // Hash eid
