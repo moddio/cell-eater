@@ -593,7 +593,7 @@ export class Game {
      */
     handleMajorityHash(frame, majorityHash) {
         // Compare our cached hash for this frame with majority
-        // Server sends majorityHash for frame-3 to account for network latency
+        // Server sends majorityHash for frame-1 (see input-batcher.ts)
         // We look up our cached hash for that frame from history
         const localHash = this.stateHashHistory.get(frame);
         // Debug: log every 100 frames
@@ -977,9 +977,6 @@ export class Game {
             const isPostTick = snapshot.postTick === true;
             const startFrame = isPostTick ? snapshotFrame + 1 : snapshotFrame;
             const ticksToRun = frame - startFrame + 1;
-            if (DEBUG_NETWORK) {
-                console.log(`[ecs] Catchup: from ${startFrame} to ${frame} (${ticksToRun} ticks), ${pendingInputs.length} pending inputs`);
-            }
             if (ticksToRun > 0) {
                 this.runCatchup(startFrame, frame, pendingInputs);
             }
@@ -992,8 +989,6 @@ export class Game {
                 frame: this.currentFrame,
                 hash: this.getStateHash()
             };
-            // DEBUG: Log state after catchup
-            console.log(`[ecs-debug] After catchup: activeClients=${this.activeClients.length} entities=${this.world.entityCount} hash=${this.getStateHash()}`);
         }
         else {
             // === FIRST JOINER PATH ===
@@ -1022,6 +1017,7 @@ export class Game {
                 this.numToClientId.clear();
                 this.nextClientNum = 1;
                 this.activeClients = [clientId];
+                this.stateHashHistory.clear(); // Clear old local hashes to prevent false desync
                 this.localRoomCreated = false; // Reset so callbacks run fresh
                 // Recreate room with fresh state
                 this.callbacks.onRoomCreate?.();
@@ -1035,6 +1031,14 @@ export class Game {
             for (const input of inputs) {
                 this.processInput(input);
             }
+            // CRITICAL: Run initial tick to execute systems and compute initial hash
+            // Without this, entities are created but systems never run for frame 0,
+            // causing hash mismatch when server sends majorityHash for frame 0
+            this.world.tick(frame, []);
+            this.lastProcessedFrame = frame;
+            // Record initial hash so we have it when server sends majorityHash
+            const initialHash = this.world.getStateHash();
+            this.stateHashHistory.set(frame, initialHash);
         }
         // Send initial snapshot if we're authority
         if (this.checkIsAuthority()) {
@@ -1081,10 +1085,10 @@ export class Game {
         // 5. Record tick time for interpolation
         this.lastTickTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
         // 6. Check for desync using majority hash from server
-        // Server sends majorityHash for frame-3 (to account for network latency)
+        // Server sends majorityHash for frame-1 (see input-batcher.ts getMajorityHash call)
         // We compare against our cached hash for the same frame
         if (majorityHash !== undefined && majorityHash !== 0) {
-            const hashFrame = frame - 3; // Must match server's offset in input-batcher.ts
+            const hashFrame = frame - 1; // Must match server's offset in input-batcher.ts
             this.handleMajorityHash(hashFrame, majorityHash);
         }
         else if (this.activeClients.length > 1 && frame % 100 === 0) {
@@ -1335,6 +1339,9 @@ export class Game {
             }
             inputsByFrame.get(frame).push(input);
         }
+        // CRITICAL: Clear old hash history before catchup
+        // We'll record hash for each catchup frame so majorityHash comparison works
+        this.stateHashHistory.clear();
         // Run each tick
         for (let f = 0; f < ticksToRun; f++) {
             const tickFrame = startFrame + f;
@@ -1348,16 +1355,16 @@ export class Game {
             this.world.tick(tickFrame, []);
             // Call game's onTick
             this.callbacks.onTick?.(tickFrame);
+            // CRITICAL: Record state hash for each catchup frame
+            // This ensures majorityHash comparison works for all frames, not just the final one
+            // Server may send majorityHash for any of these frames during catchup period
+            this.stateHashHistory.set(tickFrame, this.world.getStateHash());
         }
         this.currentFrame = endFrame;
         this.lastProcessedFrame = endFrame; // Prevent re-processing old frames
         // Clear the snapshot entity tracking - catchup is done
         // Future join events should trigger onConnect normally
         this.clientsWithEntitiesFromSnapshot.clear();
-        // CRITICAL: Initialize hash history so next majorityHash comparison works
-        // Clear old history and start fresh from this frame
-        this.stateHashHistory.clear();
-        this.stateHashHistory.set(endFrame, this.world.getStateHash());
         if (DEBUG_NETWORK) {
             console.log(`[ecs] Catchup complete at frame ${this.currentFrame}, hash=${this.getStateHash()}`);
         }
@@ -1605,11 +1612,16 @@ export class Game {
         // NOTE: Do NOT set authorityClientId here from activeClients[0]
         // Authority is determined by join order, not alphabetical order
         // processAuthorityChainInput() will set it correctly from the first join event
-        // CRITICAL: Wake all physics bodies after snapshot restore
-        // Without this, late joiners have awake bodies while existing clients may have
-        // sleeping bodies, causing physics simulation divergence after catchup
+        // CRITICAL: Sync ALL physics bodies from restored ECS components
+        // This is the ROOT CAUSE of desync on late joiners:
+        // 1. ECS components (Transform2D, Body2D) are restored with correct positions/velocities
+        // 2. But physics world's internal RigidBody2D objects still have OLD positions/velocities
+        // 3. On next physics step, the old values are used, causing immediate divergence
+        //
+        // syncAllFromComponents() copies position/velocity from ECS components to physics bodies
+        // for ALL body types (including dynamic bodies which normal sync skips)
         if (this.physics) {
-            this.physics.wakeAllBodies();
+            this.physics.syncAllFromComponents();
         }
         // CRITICAL: Restore input state so movement systems behave identically
         // Without this, systems that check `game.world.getInput(clientId)` won't find

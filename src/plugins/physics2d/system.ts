@@ -469,6 +469,52 @@ export class Physics2DSystem {
             body.sleepFrames = 0;
         }
     }
+
+    /**
+     * Force sync ALL physics bodies from ECS components.
+     * CRITICAL: Must be called after snapshot load to ensure physics world
+     * matches the restored ECS state.
+     *
+     * Normal syncBodiesToPhysics() only syncs kinematic/static bodies' positions.
+     * This function syncs ALL body types' positions AND velocities from ECS components.
+     *
+     * NOTE: If entityToBody is empty (bodies not yet created), this will first
+     * create all bodies via ensureBody() to ensure they exist before syncing.
+     */
+    syncAllFromComponents(): void {
+        if (!this.world) return;
+
+        // CRITICAL: If no bodies exist yet (e.g., after clear()), we need to create them first
+        // Otherwise this sync does nothing and bodies get created with possibly wrong state
+        const entitiesWithBody2D = [...this.world.query(Body2D)];
+        if (this.entityToBody.size === 0 && entitiesWithBody2D.length > 0) {
+            for (const entity of entitiesWithBody2D) {
+                this.ensureBody(entity);
+            }
+        }
+
+        // Now sync all bodies
+        for (const [eid, body] of this.entityToBody) {
+            const entity = this.world.getEntity(eid);
+            if (!entity || entity.destroyed) continue;
+
+            const transform = entity.get(Transform2D);
+            const bodyData = entity.get(Body2D);
+
+            // Sync position and angle from Transform2D
+            body.position.x = toFixed(transform.x);
+            body.position.y = toFixed(transform.y);
+            body.angle = toFixed(transform.angle);
+
+            // Sync velocity from Body2D
+            body.linearVelocity.x = toFixed(bodyData.vx);
+            body.linearVelocity.y = toFixed(bodyData.vy);
+
+            // Wake the body to ensure it's active
+            body.isSleeping = false;
+            body.sleepFrames = 0;
+        }
+    }
 }
 
 /**

@@ -146,6 +146,18 @@ export declare class Physics2DSystem {
      * have awake bodies, causing physics divergence.
      */
     wakeAllBodies(): void;
+    /**
+     * Force sync ALL physics bodies from ECS components.
+     * CRITICAL: Must be called after snapshot load to ensure physics world
+     * matches the restored ECS state.
+     *
+     * Normal syncBodiesToPhysics() only syncs kinematic/static bodies' positions.
+     * This function syncs ALL body types' positions AND velocities from ECS components.
+     *
+     * NOTE: If entityToBody is empty (bodies not yet created), this will first
+     * create all bodies via ensureBody() to ensure they exist before syncing.
+     */
+    syncAllFromComponents(): void;
 }
 /**
  * Create a Physics2D system.

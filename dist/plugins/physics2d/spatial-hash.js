@@ -11,7 +11,7 @@
  * Optimal for .io games with many uniform-sized entities (food, bullets)
  * plus a few large obstacles or grown players.
  */
-import { toFloat } from '../../math/fixed';
+import { toFloat, dSqrt } from '../../math/fixed';
 import { Shape2DType } from './shapes';
 // ============================================
 // Helper: Get body radius for size comparison
@@ -25,7 +25,7 @@ function getBodyRadius(body) {
         // Use diagonal half-length as radius
         const hw = toFloat(box.halfWidth);
         const hh = toFloat(box.halfHeight);
-        return Math.sqrt(hw * hw + hh * hh);
+        return dSqrt(hw * hw + hh * hh);
     }
 }
 // ============================================

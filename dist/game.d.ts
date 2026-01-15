@@ -22,6 +22,7 @@ interface Physics2DLike {
     getBody(entity: Entity): any;
     clear(): void;
     wakeAllBodies(): void;
+    syncAllFromComponents(): void;
 }
 /** Game callbacks for lifecycle events */
 export interface GameCallbacks {

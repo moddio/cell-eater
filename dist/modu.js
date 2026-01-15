@@ -4299,9 +4299,6 @@ var Game = class {
       const isPostTick = snapshot.postTick === true;
       const startFrame = isPostTick ? snapshotFrame + 1 : snapshotFrame;
       const ticksToRun = frame - startFrame + 1;
-      if (DEBUG_NETWORK) {
-        console.log(`[ecs] Catchup: from ${startFrame} to ${frame} (${ticksToRun} ticks), ${pendingInputs.length} pending inputs`);
-      }
       if (ticksToRun > 0) {
         this.runCatchup(startFrame, frame, pendingInputs);
       }
@@ -4311,7 +4308,6 @@ var Game = class {
         frame: this.currentFrame,
         hash: this.getStateHash()
       };
-      console.log(`[ecs-debug] After catchup: activeClients=${this.activeClients.length} entities=${this.world.entityCount} hash=${this.getStateHash()}`);
     } else {
       if (DEBUG_NETWORK)
         console.log("[ecs] First join: creating room");
@@ -4331,6 +4327,7 @@ var Game = class {
         this.numToClientId.clear();
         this.nextClientNum = 1;
         this.activeClients = [clientId];
+        this.stateHashHistory.clear();
         this.localRoomCreated = false;
         this.callbacks.onRoomCreate?.();
         this.localRoomCreated = true;
@@ -4340,6 +4337,10 @@ var Game = class {
       for (const input of inputs) {
         this.processInput(input);
       }
+      this.world.tick(frame, []);
+      this.lastProcessedFrame = frame;
+      const initialHash = this.world.getStateHash();
+      this.stateHashHistory.set(frame, initialHash);
     }
     if (this.checkIsAuthority()) {
       this.sendSnapshot("init");
@@ -4375,7 +4376,7 @@ var Game = class {
     }
     this.lastTickTime = typeof performance !== "undefined" ? performance.now() : Date.now();
     if (majorityHash !== void 0 && majorityHash !== 0) {
-      const hashFrame = frame - 3;
+      const hashFrame = frame - 1;
       this.handleMajorityHash(hashFrame, majorityHash);
     } else if (this.activeClients.length > 1 && frame % 100 === 0) {
       console.warn(`[state-sync] No majorityHash in tick ${frame} (expected with ${this.activeClients.length} clients)`);
@@ -4573,6 +4574,7 @@ var Game = class {
       }
       inputsByFrame.get(frame).push(input);
     }
+    this.stateHashHistory.clear();
     for (let f = 0; f < ticksToRun; f++) {
       const tickFrame = startFrame + f;
       this.currentFrame = tickFrame;
@@ -4582,12 +4584,11 @@ var Game = class {
       }
       this.world.tick(tickFrame, []);
       this.callbacks.onTick?.(tickFrame);
+      this.stateHashHistory.set(tickFrame, this.world.getStateHash());
     }
     this.currentFrame = endFrame;
     this.lastProcessedFrame = endFrame;
     this.clientsWithEntitiesFromSnapshot.clear();
-    this.stateHashHistory.clear();
-    this.stateHashHistory.set(endFrame, this.world.getStateHash());
     if (DEBUG_NETWORK) {
       console.log(`[ecs] Catchup complete at frame ${this.currentFrame}, hash=${this.getStateHash()}`);
     }
@@ -4779,7 +4780,7 @@ var Game = class {
     }
     this.activeClients.sort();
     if (this.physics) {
-      this.physics.wakeAllBodies();
+      this.physics.syncAllFromComponents();
     }
     if (snapshot.inputState) {
       this.world.setInputState(snapshot.inputState);
@@ -6048,7 +6049,7 @@ function disableDeterminismGuard() {
 }
 
 // src/version.ts
-var ENGINE_VERSION = "61e8993";
+var ENGINE_VERSION = "0e6f869";
 
 // src/plugins/debug-ui.ts
 var debugDiv = null;
@@ -6747,7 +6748,7 @@ function getBodyRadius(body) {
     const box = body.shape;
     const hw = toFloat(box.halfWidth);
     const hh = toFloat(box.halfHeight);
-    return Math.sqrt(hw * hw + hh * hh);
+    return dSqrt(hw * hw + hh * hh);
   }
 }
 var SpatialHash2D = class {
@@ -7879,6 +7880,41 @@ var Physics2DSystem = class {
    */
   wakeAllBodies() {
     for (const body of this.physicsWorld.bodies) {
+      body.isSleeping = false;
+      body.sleepFrames = 0;
+    }
+  }
+  /**
+   * Force sync ALL physics bodies from ECS components.
+   * CRITICAL: Must be called after snapshot load to ensure physics world
+   * matches the restored ECS state.
+   *
+   * Normal syncBodiesToPhysics() only syncs kinematic/static bodies' positions.
+   * This function syncs ALL body types' positions AND velocities from ECS components.
+   *
+   * NOTE: If entityToBody is empty (bodies not yet created), this will first
+   * create all bodies via ensureBody() to ensure they exist before syncing.
+   */
+  syncAllFromComponents() {
+    if (!this.world)
+      return;
+    const entitiesWithBody2D = [...this.world.query(Body2D)];
+    if (this.entityToBody.size === 0 && entitiesWithBody2D.length > 0) {
+      for (const entity of entitiesWithBody2D) {
+        this.ensureBody(entity);
+      }
+    }
+    for (const [eid, body] of this.entityToBody) {
+      const entity = this.world.getEntity(eid);
+      if (!entity || entity.destroyed)
+        continue;
+      const transform = entity.get(Transform2D);
+      const bodyData = entity.get(Body2D);
+      body.position.x = toFixed(transform.x);
+      body.position.y = toFixed(transform.y);
+      body.angle = toFixed(transform.angle);
+      body.linearVelocity.x = toFixed(bodyData.vx);
+      body.linearVelocity.y = toFixed(bodyData.vy);
       body.isSleeping = false;
       body.sleepFrames = 0;
     }
