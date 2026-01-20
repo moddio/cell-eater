@@ -1367,6 +1367,17 @@ export class Game {
                 })
                 .sort((a, b) => a.seq - b.seq);
 
+            // 5b. Process JOIN/DISCONNECT events immediately (player lifecycle)
+            // These establish player presence and must happen regardless of catchup.
+            // Simulation state (movement, physics) can be corrected by resync,
+            // but player existence is needed immediately to avoid "stuck respawning".
+            for (const input of pendingInputs) {
+                const inputType = getInputType(input);
+                if (inputType === 'join' || inputType === 'reconnect' || inputType === 'disconnect' || inputType === 'leave') {
+                    this.processInput(input);
+                }
+            }
+
             // 6. Run catchup simulation
             const snapshotFrame = this.currentFrame;
             const isPostTick = snapshot.postTick === true;
@@ -1384,8 +1395,12 @@ export class Game {
                     this.connection.requestResync();
                 }
 
-                // Don't process anything - wait for fresh snapshot to arrive
-                // The fresh snapshot will trigger a new INITIAL_STATE with current state
+                // Player lifecycle events already processed above, so player exists.
+                // Set up minimal state so game loop can run while waiting for resync.
+                this.currentFrame = frame;
+                this.lastProcessedFrame = frame;
+                this.prevSnapshot = this.world.getSparseSnapshot();
+                this.startGameLoop();
                 return;
             }
 
