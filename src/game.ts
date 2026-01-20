@@ -291,10 +291,7 @@ export class Game {
     /** ClientIds that have DISCONNECT inputs during current catchup (for robust stale JOIN detection) */
     private clientsWithDisconnectInCatchup: Set<string> = new Set();
 
-    /** Seq of the loaded snapshot - JOINs with seq <= this are already in snapshot */
-    private loadedSnapshotSeq: number = 0;
-
-    /** True when we're running catchup simulation (only then should we filter JOINs by seq) */
+    /** True during catchup simulation */
     private inCatchupMode: boolean = false;
 
     /** Attached renderer */
@@ -497,6 +494,7 @@ export class Game {
 
     /**
      * Intern a client ID string, get back a number.
+     * Creates a new mapping if one doesn't exist.
      */
     internClientId(clientId: string): number {
         let num = this.clientIdToNum.get(clientId);
@@ -506,6 +504,13 @@ export class Game {
             this.numToClientId.set(num, clientId);
         }
         return num;
+    }
+
+    /**
+     * Get the numeric ID for a client ID string without creating a new mapping.
+     */
+    getClientIdNum(clientId: string): number | undefined {
+        return this.clientIdToNum.get(clientId);
     }
 
     /**
@@ -1014,7 +1019,6 @@ export class Game {
         this.clientsWithEntitiesFromSnapshot.clear();
         this.clientIdsFromSnapshotMap.clear();
         this.clientsWithDisconnectInCatchup.clear();
-        this.loadedSnapshotSeq = 0;
 
         console.log(`[state-sync] === END RESYNC ===`);
     }
@@ -1325,28 +1329,15 @@ export class Game {
                 console.error(`[SNAPSHOT] HASH MISMATCH! loaded=0x${loadedHash.toString(16)} expected=0x${expectedHash?.toString(16)}`);
             }
 
-            // 3. Build authority chain from ALL inputs
-            for (const input of inputs) {
-                this.processAuthorityChainInput(input);
-            }
-
-            // 4. Call onSnapshot callback
-            // CRITICAL: onSnapshot runs ONLY on late joiners, so we MUST isolate RNG.
-            // Any dRandom() usage here would advance late joiner's RNG while authority's stays unchanged.
+            // Isolate RNG for onSnapshot callback
             const rngStateSnapshot = saveRandomState();
             if (this.callbacks.onSnapshot) {
                 this.callbacks.onSnapshot(this.world.getAllEntities());
             }
 
             loadRandomState(rngStateSnapshot);
-            // 5. Filter inputs already in snapshot
-            // CRITICAL: Always include join/reconnect/disconnect inputs regardless of seq!
-            // The server sends ALL joins for clientId mapping, but we were filtering them out
-            // if seq <= snapshotSeq. This caused late joiners to miss their own join event
-            // when the snapshot was taken AFTER their join was queued.
-            // Note: snapshotSeq is declared earlier in this block
 
-            // Helper to get input type, handling both object and binary data
+            // Filter inputs - always include lifecycle events, others only if after snapshot
             const getInputType = (input: ServerInput): string | undefined => {
                 let data = input.data;
                 if (data instanceof Uint8Array) {
@@ -1356,16 +1347,16 @@ export class Game {
             };
 
             const pendingInputs = inputs
-                .filter(i => {
-                    const inputType = getInputType(i);
-                    // Always process join/reconnect/disconnect for proper entity lifecycle
-                    if (inputType === 'join' || inputType === 'reconnect' || inputType === 'disconnect' || inputType === 'leave') {
-                        return true;
-                    }
-                    // Other inputs only if after snapshot
-                    return i.seq > snapshotSeq;
-                })
+                .filter(i => i.seq > snapshotSeq)
                 .sort((a, b) => a.seq - b.seq);
+
+            // Process lifecycle events before catchup so player exists immediately
+            for (const input of pendingInputs) {
+                const inputType = getInputType(input);
+                if (inputType === 'join' || inputType === 'reconnect' || inputType === 'disconnect' || inputType === 'leave') {
+                    this.processInput(input);
+                }
+            }
 
             // 6. Run catchup simulation
             const snapshotFrame = this.currentFrame;
@@ -1384,8 +1375,12 @@ export class Game {
                     this.connection.requestResync();
                 }
 
-                // Don't process anything - wait for fresh snapshot to arrive
-                // The fresh snapshot will trigger a new INITIAL_STATE with current state
+                // Player lifecycle events already processed above, so player exists.
+                // Set up minimal state so game loop can run while waiting for resync.
+                this.currentFrame = frame;
+                this.lastProcessedFrame = frame;
+                this.prevSnapshot = this.world.getSparseSnapshot();
+                this.startGameLoop();
                 return;
             }
 
@@ -1657,45 +1652,19 @@ export class Game {
         }
 
         if (type === 'join') {
-            // Update activeClients for state sync (sorted for deterministic assignment)
             const wasActive = this.activeClients.includes(clientId);
             if (!wasActive) {
                 this.activeClients.push(clientId);
                 this.activeClients.sort();
             }
 
-            // First joiner becomes authority
             if (this.authorityClientId === null) {
                 this.authorityClientId = clientId;
             }
 
-            // CRITICAL: Save RNG state before conditional callback.
-            // onConnect may be skipped for clients that already have entities from snapshot.
-            // If the callback uses dRandom(), we must ensure the global RNG is NOT affected,
-            // so that all clients maintain identical RNG state regardless of which callbacks ran.
-            // The entity positions from callbacks are preserved in snapshots - only RNG sync matters.
+            // Isolate RNG for callback
             const rngState = saveRandomState();
-
-            // CRITICAL FIX: Only process JOINs that happened AFTER the snapshot was taken.
-            // JOINs with seq <= loadedSnapshotSeq are already reflected in the snapshot state.
-            // This is deterministic because each client uses their own snapshot.seq.
-            //
-            // NOTE: We do NOT skip "stale" JOINs (clients who disconnect later in catchup).
-            // Skipping them causes allocator divergence because:
-            // 1. We don't allocate the entity ID
-            // 2. So we don't free it when DISCONNECT happens
-            // 3. So allocator generations diverge -> different eids -> DESYNC
-            // Instead, process ALL JOINs and let DISCONNECT handle cleanup.
-            const inputSeq = (input as any).seq || 0;
-            // CRITICAL: Only filter by seq during catchup mode - outside catchup, all JOINs are fresh
-            const isAlreadyInSnapshot = this.inCatchupMode && inputSeq > 0 && inputSeq <= this.loadedSnapshotSeq;
-
-            // Skip only if JOIN is already reflected in snapshot (seq <= snapshot.seq)
-            if (!isAlreadyInSnapshot) {
-                this.callbacks.onConnect?.(clientId);
-            }
-
-            // Restore RNG state - callback's random usage doesn't affect global simulation RNG
+            this.callbacks.onConnect?.(clientId);
             loadRandomState(rngState);
 
             // Mark snapshot needed
@@ -1715,15 +1684,13 @@ export class Game {
                 this.activeClients.splice(activeIdx, 1);
             }
 
-            // Transfer authority if needed
             if (clientId === this.authorityClientId) {
                 this.authorityClientId = this.activeClients[0] || null;
             }
 
-            // CRITICAL FIX: Remove from clientsWithEntitiesFromSnapshot on disconnect.
             this.clientsWithEntitiesFromSnapshot.delete(clientId);
 
-            // CRITICAL: Save/restore RNG around onDisconnect callback.
+            // Isolate RNG for callback
             const rngStateDisconnect = saveRandomState();
             this.callbacks.onDisconnect?.(clientId);
             loadRandomState(rngStateDisconnect);
@@ -1767,7 +1734,6 @@ export class Game {
         const type = data?.type;
 
         if (type === 'join') {
-            // Update activeClients for state sync
             if (!this.activeClients.includes(clientId)) {
                 this.activeClients.push(clientId);
                 this.activeClients.sort();
@@ -1866,8 +1832,7 @@ export class Game {
         this.clientsWithEntitiesFromSnapshot.clear();
         this.clientIdsFromSnapshotMap.clear();
         this.clientsWithDisconnectInCatchup.clear();
-        this.loadedSnapshotSeq = 0;  // Reset so normal JOINs aren't filtered
-        this.inCatchupMode = false;  // Exit catchup mode
+        this.inCatchupMode = false;
     }
 
     // ==========================================
@@ -1982,10 +1947,6 @@ export class Game {
         if (DEBUG_NETWORK) {
             console.log(`[ecs] Loading snapshot: ${snapshot.entities?.length} entities`);
         }
-
-        // CRITICAL: Track snapshot seq for filtering JOINs during catchup
-        // JOINs with seq <= this are already reflected in the snapshot state
-        this.loadedSnapshotSeq = snapshot.seq || 0;
 
         // Reset world FIRST (clears everything including ID allocator and strings)
         this.world.reset();
@@ -2165,34 +2126,33 @@ export class Game {
         for (const entity of this.world.query(Player)) {
             const player = entity.get(Player);
             if (player.clientId === 0) {
-                // ERROR: clientId=0 should never happen!
-                console.error(`[DEBUG-SNAPSHOT] ERROR: eid=${entity.eid} has Player.clientId=0 (invalid!)`);
+                // ERROR: clientId=0 should never happen in networked games
+                console.error(`[ecs] Player entity ${entity.eid} has clientId=0 (invalid)`);
+                continue;
             }
-            if (player.clientId !== 0) {
-                const clientIdStr = this.getClientIdString(player.clientId);
-                if (clientIdStr) {
-                    this.clientsWithEntitiesFromSnapshot.add(clientIdStr);
+            const clientIdStr = this.getClientIdString(player.clientId);
+            if (clientIdStr) {
+                this.clientsWithEntitiesFromSnapshot.add(clientIdStr);
 
-                    // CRITICAL: Add to activeClients for partition assignment
-                    // Without this, partition assignment differs between authority and late joiner
-                    if (!this.activeClients.includes(clientIdStr)) {
-                        this.activeClients.push(clientIdStr);
-                    }
+                // CRITICAL: Add to activeClients for partition assignment
+                // Without this, partition assignment differs between authority and late joiner
+                if (!this.activeClients.includes(clientIdStr)) {
+                    this.activeClients.push(clientIdStr);
+                }
 
-                    // CRITICAL FIX: Register clientId with network SDK for TICK decoding
-                    // Without this, late joiners can't decode inputs from clients
-                    // whose JOIN event was already included in the snapshot.
-                    // The SDK uses a hash-to-clientId map for binary TICK decoding.
-                    if (network?.registerClientId) {
-                        network.registerClientId(clientIdStr);
-                        if (DEBUG_NETWORK) {
-                            console.log(`[ecs] Registered clientId ${clientIdStr.slice(0, 8)} from snapshot entity`);
-                        }
-                    }
-
+                // CRITICAL FIX: Register clientId with network SDK for TICK decoding
+                // Without this, late joiners can't decode inputs from clients
+                // whose JOIN event was already included in the snapshot.
+                // The SDK uses a hash-to-clientId map for binary TICK decoding.
+                if (network?.registerClientId) {
+                    network.registerClientId(clientIdStr);
                     if (DEBUG_NETWORK) {
-                        console.log(`[ecs] Snapshot has entity for client ${clientIdStr.slice(0, 8)}`);
+                        console.log(`[ecs] Registered clientId ${clientIdStr.slice(0, 8)} from snapshot entity`);
                     }
+                }
+
+                if (DEBUG_NETWORK) {
+                    console.log(`[ecs] Snapshot has entity for client ${clientIdStr.slice(0, 8)}`);
                 }
             }
         }
