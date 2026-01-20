@@ -260,9 +260,7 @@ export declare class Game {
      */
     internClientId(clientId: string): number;
     /**
-     * Get the numeric ID for a client ID string WITHOUT creating a new mapping.
-     * Returns undefined if the clientId hasn't been interned yet.
-     * Use this in onDisconnect to avoid creating orphan mappings.
+     * Get the numeric ID for a client ID string without creating a new mapping.
      */
     getClientIdNum(clientId: string): number | undefined;
     /**

@@ -510,9 +510,7 @@ export class Game {
     }
 
     /**
-     * Get the numeric ID for a client ID string WITHOUT creating a new mapping.
-     * Returns undefined if the clientId hasn't been interned yet.
-     * Use this in onDisconnect to avoid creating orphan mappings.
+     * Get the numeric ID for a client ID string without creating a new mapping.
      */
     getClientIdNum(clientId: string): number | undefined {
         return this.clientIdToNum.get(clientId);
@@ -1335,30 +1333,15 @@ export class Game {
                 console.error(`[SNAPSHOT] HASH MISMATCH! loaded=0x${loadedHash.toString(16)} expected=0x${expectedHash?.toString(16)}`);
             }
 
-            // 3. Authority chain for late joiners
-            // NOTE: We skip processAuthorityChainInput here because:
-            // - activeClients is already populated from Player entities in loadNetworkSnapshot()
-            // - Late joiner is never authority (authority is already established)
-            // - DISCONNECTs are handled via processInput in the lifecycle event loop below
-            // This avoids duplicate stale JOIN filtering logic.
-
-            // 4. Call onSnapshot callback
-            // CRITICAL: onSnapshot runs ONLY on late joiners, so we MUST isolate RNG.
-            // Any dRandom() usage here would advance late joiner's RNG while authority's stays unchanged.
+            // Isolate RNG for onSnapshot callback
             const rngStateSnapshot = saveRandomState();
             if (this.callbacks.onSnapshot) {
                 this.callbacks.onSnapshot(this.world.getAllEntities());
             }
 
             loadRandomState(rngStateSnapshot);
-            // 5. Filter inputs already in snapshot
-            // CRITICAL: Always include join/reconnect/disconnect inputs regardless of seq!
-            // The server sends ALL joins for clientId mapping, but we were filtering them out
-            // if seq <= snapshotSeq. This caused late joiners to miss their own join event
-            // when the snapshot was taken AFTER their join was queued.
-            // Note: snapshotSeq is declared earlier in this block
 
-            // Helper to get input type, handling both object and binary data
+            // Filter inputs - always include lifecycle events, others only if after snapshot
             const getInputType = (input: ServerInput): string | undefined => {
                 let data = input.data;
                 if (data instanceof Uint8Array) {
@@ -1379,25 +1362,13 @@ export class Game {
                 })
                 .sort((a, b) => a.seq - b.seq);
 
-            // 5b. Process JOIN/DISCONNECT events immediately (player lifecycle)
-            // These establish player presence and must happen regardless of catchup.
-            // Simulation state (movement, physics) can be corrected by resync,
-            // but player existence is needed immediately to avoid "stuck respawning".
-            //
-            // CRITICAL: Only process JOINs that happened AFTER the snapshot (seq > snapshotSeq).
-            // JOINs with seq <= snapshotSeq are "stale" - they might have been followed by
-            // a DISCONNECT that's also in the snapshot. Processing them would create
-            // duplicate entities.
-            // DISCONNECTs are always processed to ensure cleanup.
+            // Process lifecycle events immediately (JOINs only if after snapshot)
             this.loadedSnapshotSeq = snapshotSeq;
             for (const input of pendingInputs) {
                 const inputType = getInputType(input);
                 if (inputType === 'disconnect' || inputType === 'leave') {
-                    // Always process disconnects for cleanup
                     this.processInput(input);
                 } else if (inputType === 'join' || inputType === 'reconnect') {
-                    // Only process JOINs that happened AFTER the snapshot
-                    // (stale JOINs are also filtered in processInput with warning)
                     const inputSeq = (input as any).seq || 0;
                     if (inputSeq > snapshotSeq) {
                         this.processInput(input);
@@ -1699,17 +1670,10 @@ export class Game {
         }
 
         if (type === 'join') {
-            // CRITICAL FIX: Check if this JOIN is already reflected in the snapshot FIRST.
-            // JOINs with seq <= loadedSnapshotSeq are stale - the snapshot already contains
-            // the authoritative state for that point in time (either the client has an entity,
-            // or they already disconnected and shouldn't be in activeClients).
+            // Skip stale JOINs already reflected in snapshot
             const inputSeq = (input as any).seq || 0;
             const isAlreadyInSnapshot = this.inCatchupMode && inputSeq > 0 && inputSeq <= this.loadedSnapshotSeq;
-
-            // Skip ENTIRE join processing if already reflected in snapshot
-            // This includes activeClients update - snapshot's Player entities are authoritative
             if (isAlreadyInSnapshot) {
-                // Server shouldn't send stale events - log warning for debugging
                 console.warn(`[ecs] Stale JOIN filtered (seq ${inputSeq} <= snapshotSeq ${this.loadedSnapshotSeq}): ${clientId.slice(0, 8)}`);
                 return;
             }
@@ -1721,19 +1685,13 @@ export class Game {
                 this.activeClients.sort();
             }
 
-            // First joiner becomes authority
             if (this.authorityClientId === null) {
                 this.authorityClientId = clientId;
             }
 
-            // CRITICAL: Save RNG state before callback.
-            // If the callback uses dRandom(), we must ensure the global RNG is NOT affected,
-            // so that all clients maintain identical RNG state regardless of which callbacks ran.
+            // Isolate RNG for callback
             const rngState = saveRandomState();
-
             this.callbacks.onConnect?.(clientId);
-
-            // Restore RNG state - callback's random usage doesn't affect global simulation RNG
             loadRandomState(rngState);
 
             // Mark snapshot needed
@@ -1753,15 +1711,13 @@ export class Game {
                 this.activeClients.splice(activeIdx, 1);
             }
 
-            // Transfer authority if needed
             if (clientId === this.authorityClientId) {
                 this.authorityClientId = this.activeClients[0] || null;
             }
 
-            // CRITICAL FIX: Remove from clientsWithEntitiesFromSnapshot on disconnect.
             this.clientsWithEntitiesFromSnapshot.delete(clientId);
 
-            // CRITICAL: Save/restore RNG around onDisconnect callback.
+            // Isolate RNG for callback
             const rngStateDisconnect = saveRandomState();
             this.callbacks.onDisconnect?.(clientId);
             loadRandomState(rngStateDisconnect);
@@ -1804,12 +1760,7 @@ export class Game {
         const clientId = data?.clientId || input.clientId;
         const type = data?.type;
 
-        // NOTE: Stale JOIN filtering is handled in processInput().
-        // For late joiners, activeClients is populated from Player entities in loadNetworkSnapshot().
-        // This function only tracks authority chain for non-late-joiner flows.
-
         if (type === 'join') {
-            // Update activeClients for state sync
             if (!this.activeClients.includes(clientId)) {
                 this.activeClients.push(clientId);
                 this.activeClients.sort();

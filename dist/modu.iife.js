@@ -1,4 +1,4 @@
-/* Modu Engine - Built: 2026-01-20T08:39:51.638Z - Commit: f5de42b */
+/* Modu Engine - Built: 2026-01-20T08:50:40.904Z - Commit: 6533d09 */
 // Modu Engine + Network SDK Combined Bundle
 "use strict";
 var moduNetwork = (() => {
@@ -7724,7 +7724,7 @@ var Modu = (() => {
   }
 
   // src/version.ts
-  var ENGINE_VERSION = "f5de42b";
+  var ENGINE_VERSION = "6533d09";
 
   // src/plugins/debug-ui.ts
   var debugDiv = null;
