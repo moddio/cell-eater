@@ -3801,9 +3801,7 @@ var Game = class {
     return num;
   }
   /**
-   * Get the numeric ID for a client ID string WITHOUT creating a new mapping.
-   * Returns undefined if the clientId hasn't been interned yet.
-   * Use this in onDisconnect to avoid creating orphan mappings.
+   * Get the numeric ID for a client ID string without creating a new mapping.
    */
   getClientIdNum(clientId) {
     return this.clientIdToNum.get(clientId);
@@ -4411,23 +4409,12 @@ var Game = class {
         }
         return data?.type;
       };
-      const pendingInputs = inputs.filter((i) => {
-        const inputType = getInputType(i);
-        if (inputType === "join" || inputType === "reconnect" || inputType === "disconnect" || inputType === "leave") {
-          return true;
-        }
-        return i.seq > snapshotSeq;
-      }).sort((a, b) => a.seq - b.seq);
+      const pendingInputs = inputs.filter((i) => i.seq > snapshotSeq).sort((a, b) => a.seq - b.seq);
       this.loadedSnapshotSeq = snapshotSeq;
       for (const input of pendingInputs) {
         const inputType = getInputType(input);
-        if (inputType === "disconnect" || inputType === "leave") {
+        if (inputType === "join" || inputType === "reconnect" || inputType === "disconnect" || inputType === "leave") {
           this.processInput(input);
-        } else if (inputType === "join" || inputType === "reconnect") {
-          const inputSeq = input.seq || 0;
-          if (inputSeq > snapshotSeq) {
-            this.processInput(input);
-          }
         }
       }
       const snapshotFrame = this.currentFrame;
@@ -4615,12 +4602,6 @@ var Game = class {
       this.lastInputSeq = input.seq;
     }
     if (type === "join") {
-      const inputSeq = input.seq || 0;
-      const isAlreadyInSnapshot = this.inCatchupMode && inputSeq > 0 && inputSeq <= this.loadedSnapshotSeq;
-      if (isAlreadyInSnapshot) {
-        console.warn(`[ecs] Stale JOIN filtered (seq ${inputSeq} <= snapshotSeq ${this.loadedSnapshotSeq}): ${clientId.slice(0, 8)}`);
-        return;
-      }
       const wasActive = this.activeClients.includes(clientId);
       if (!wasActive) {
         this.activeClients.push(clientId);
@@ -6216,7 +6197,7 @@ function disableDeterminismGuard() {
 }
 
 // src/version.ts
-var ENGINE_VERSION = "6533d09";
+var ENGINE_VERSION = "98897c2";
 
 // src/plugins/debug-ui.ts
 var debugDiv = null;

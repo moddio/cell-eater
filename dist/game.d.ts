@@ -155,9 +155,7 @@ export declare class Game {
     private clientIdsFromSnapshotMap;
     /** ClientIds that have DISCONNECT inputs during current catchup (for robust stale JOIN detection) */
     private clientsWithDisconnectInCatchup;
-    /** Seq of the loaded snapshot - JOINs with seq <= this are already in snapshot */
-    private loadedSnapshotSeq;
-    /** True when we're running catchup simulation (only then should we filter JOINs by seq) */
+    /** True during catchup simulation */
     private inCatchupMode;
     /** Attached renderer */
     private renderer;

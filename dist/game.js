@@ -146,9 +146,7 @@ export class Game {
         this.clientIdsFromSnapshotMap = new Set();
         /** ClientIds that have DISCONNECT inputs during current catchup (for robust stale JOIN detection) */
         this.clientsWithDisconnectInCatchup = new Set();
-        /** Seq of the loaded snapshot - JOINs with seq <= this are already in snapshot */
-        this.loadedSnapshotSeq = 0;
-        /** True when we're running catchup simulation (only then should we filter JOINs by seq) */
+        /** True during catchup simulation */
         this.inCatchupMode = false;
         /** Attached renderer */
         this.renderer = null;
@@ -775,7 +773,6 @@ export class Game {
         this.clientsWithEntitiesFromSnapshot.clear();
         this.clientIdsFromSnapshotMap.clear();
         this.clientsWithDisconnectInCatchup.clear();
-        this.loadedSnapshotSeq = 0;
         console.log(`[state-sync] === END RESYNC ===`);
     }
     /**
@@ -1072,28 +1069,13 @@ export class Game {
                 return data?.type;
             };
             const pendingInputs = inputs
-                .filter(i => {
-                const inputType = getInputType(i);
-                // Always process join/reconnect/disconnect for proper entity lifecycle
-                if (inputType === 'join' || inputType === 'reconnect' || inputType === 'disconnect' || inputType === 'leave') {
-                    return true;
-                }
-                // Other inputs only if after snapshot
-                return i.seq > snapshotSeq;
-            })
+                .filter(i => i.seq > snapshotSeq)
                 .sort((a, b) => a.seq - b.seq);
-            // Process lifecycle events immediately (JOINs only if after snapshot)
-            this.loadedSnapshotSeq = snapshotSeq;
+            // Process lifecycle events before catchup so player exists immediately
             for (const input of pendingInputs) {
                 const inputType = getInputType(input);
-                if (inputType === 'disconnect' || inputType === 'leave') {
+                if (inputType === 'join' || inputType === 'reconnect' || inputType === 'disconnect' || inputType === 'leave') {
                     this.processInput(input);
-                }
-                else if (inputType === 'join' || inputType === 'reconnect') {
-                    const inputSeq = input.seq || 0;
-                    if (inputSeq > snapshotSeq) {
-                        this.processInput(input);
-                    }
                 }
             }
             // 6. Run catchup simulation
@@ -1339,14 +1321,6 @@ export class Game {
             this.lastInputSeq = input.seq;
         }
         if (type === 'join') {
-            // Skip stale JOINs already reflected in snapshot
-            const inputSeq = input.seq || 0;
-            const isAlreadyInSnapshot = this.inCatchupMode && inputSeq > 0 && inputSeq <= this.loadedSnapshotSeq;
-            if (isAlreadyInSnapshot) {
-                console.warn(`[ecs] Stale JOIN filtered (seq ${inputSeq} <= snapshotSeq ${this.loadedSnapshotSeq}): ${clientId.slice(0, 8)}`);
-                return;
-            }
-            // Update activeClients for state sync (sorted for deterministic assignment)
             const wasActive = this.activeClients.includes(clientId);
             if (!wasActive) {
                 this.activeClients.push(clientId);
@@ -1507,8 +1481,7 @@ export class Game {
         this.clientsWithEntitiesFromSnapshot.clear();
         this.clientIdsFromSnapshotMap.clear();
         this.clientsWithDisconnectInCatchup.clear();
-        this.loadedSnapshotSeq = 0; // Reset so normal JOINs aren't filtered
-        this.inCatchupMode = false; // Exit catchup mode
+        this.inCatchupMode = false;
     }
     // ==========================================
     // Snapshot Methods
@@ -1609,9 +1582,6 @@ export class Game {
         if (DEBUG_NETWORK) {
             console.log(`[ecs] Loading snapshot: ${snapshot.entities?.length} entities`);
         }
-        // CRITICAL: Track snapshot seq for filtering JOINs during catchup
-        // JOINs with seq <= this are already reflected in the snapshot state
-        this.loadedSnapshotSeq = snapshot.seq || 0;
         // Reset world FIRST (clears everything including ID allocator and strings)
         this.world.reset();
         // CRITICAL: Clear physics state before recreating entities
