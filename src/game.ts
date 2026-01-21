@@ -20,6 +20,7 @@ import { QueryIterator } from './core/query';
 import { encode, decode } from './codec';
 import { loadRandomState, saveRandomState } from './math/random';
 import { INDEX_MASK } from './core/constants';
+import { ENGINE_VERSION } from './version';
 import {
     computePartitionAssignment,
     getClientPartitions,
@@ -64,7 +65,7 @@ interface Connection {
     // State sync callbacks (set by game)
     onReliabilityUpdate?: (scores: Record<string, number>, version: number) => void;
     onMajorityHash?: (frame: number, hash: number) => void;
-    onResyncSnapshot?: (data: Uint8Array, frame: number) => void;
+    onResyncSnapshot?: (data: Uint8Array, frame: number, inputs: ServerInput[]) => void;
 }
 
 /** Network SDK interface */
@@ -802,8 +803,8 @@ export class Game {
                 };
             }
             if ('onResyncSnapshot' in this.connection) {
-                this.connection.onResyncSnapshot = (data: Uint8Array, frame: number) => {
-                    this.handleResyncSnapshot(data, frame);
+                this.connection.onResyncSnapshot = (data: Uint8Array, frame: number, inputs: ServerInput[]) => {
+                    this.handleResyncSnapshot(data, frame, inputs);
                 };
             }
         } catch (err: any) {
@@ -886,8 +887,8 @@ export class Game {
      * Handle resync snapshot from authority (hard recovery after desync).
      * This compares state, logs detailed diff, then replaces local state.
      */
-    private handleResyncSnapshot(data: Uint8Array, serverFrame: number): void {
-        console.warn(`[ENGINE-RESYNC] Received resync snapshot (${data.length} bytes) for frame ${serverFrame}. currentFrame=${this.currentFrame} isDesynced=${this.isDesynced}`);
+    private handleResyncSnapshot(data: Uint8Array, serverFrame: number, inputs: ServerInput[] = []): void {
+        console.warn(`[ENGINE-RESYNC] Received resync snapshot (${data.length} bytes) for frame ${serverFrame}. currentFrame=${this.currentFrame} isDesynced=${this.isDesynced} inputs=${inputs.length}`);
 
         // Decode the snapshot - try binary format first, then JSON fallback
         let snapshot: any;
@@ -974,7 +975,21 @@ export class Game {
         // Load the authority snapshot (this resets and rebuilds world state)
         this.loadNetworkSnapshot(snapshot);
 
-        // Update frame to match server
+        // Update frame to match snapshot
+        const snapshotFrame = snapshot.frame || serverFrame;
+        this.currentFrame = snapshotFrame;
+
+        // CRITICAL: Run catchup simulation if we have inputs
+        // The server already filters inputs to those after snapshot seq
+        if (inputs.length > 0) {
+            const ticksToRun = serverFrame - snapshotFrame;
+            if (ticksToRun > 0) {
+                console.log(`[RESYNC-CATCHUP] Running ${ticksToRun} ticks with ${inputs.length} inputs (snapshotFrame=${snapshotFrame}, serverFrame=${serverFrame})`);
+                this.runCatchup(snapshotFrame, serverFrame, inputs);
+            }
+        }
+
+        // Update frame to match server after catchup
         this.currentFrame = serverFrame;
 
         // Clear the desync state
@@ -984,6 +999,16 @@ export class Game {
         // Verify resync worked
         const newLocalHash = this.world.getStateHash();
         const serverHash = snapshot.hash;
+
+        // DEBUG: Log entity breakdown after resync
+        const allEnts = this.world.getAllEntities();
+        const localEnts = allEnts.filter(e => (e.eid & 0x40000000) !== 0);
+        const syncedEnts = allEnts.filter(e => (e.eid & 0x40000000) === 0);
+        console.log(`[RESYNC-DEBUG] After load: ${allEnts.length} total, ${syncedEnts.length} synced, ${localEnts.length} local (camera etc). Hash=${newLocalHash.toString(16)}`);
+        if (localEnts.length > 0) {
+            console.log(`[RESYNC-DEBUG] Local entities: ${localEnts.map(e => e.type + '#' + e.eid.toString(16)).join(', ')}`);
+        }
+
         if (serverHash && newLocalHash === serverHash) {
             console.log(`[state-sync] Hard recovery successful - hash=${newLocalHash.toString(16).padStart(8, '0')}`);
         } else if (!serverHash) {
@@ -1042,6 +1067,10 @@ export class Game {
         // Compare each local entity with server entity
         for (const entity of this.world.getAllEntities()) {
             const eid = entity.eid;
+
+            // Skip local-only entities (camera, etc.) - they're not synced
+            if (eid & 0x40000000) continue;
+
             const serverEntity = serverEntityMap.get(eid);
             const index = eid & INDEX_MASK;
 
@@ -1266,6 +1295,7 @@ export class Game {
             // ONLY process join inputs that are IN the snapshot (seq <= snapshotSeq).
             // Joins that happen AFTER the snapshot will be interned when processed normally.
             const snapshotSeq = snapshot.seq || 0;
+
             for (const input of inputs) {
                 // Skip joins that happen AFTER the snapshot - they'll be interned during normal processing
                 // Also skip if seq is undefined (shouldn't happen, but be safe)
@@ -1279,7 +1309,6 @@ export class Game {
                 }
                 const inputClientId = data?.clientId || input.clientId;
                 if (inputClientId && (data?.type === 'join' || data?.type === 'reconnect')) {
-                    // Intern the clientId to build numToClientId mapping
                     this.internClientId(inputClientId);
                 }
             }
@@ -1288,6 +1317,7 @@ export class Game {
             this.currentFrame = snapshot.frame || frame;
 
             this.loadNetworkSnapshot(snapshot);
+
             // Verify loaded state hash matches expected (from authority)
             const loadedHash = this.world.getStateHash();
             const expectedHash = snapshot.hash;
@@ -1934,14 +1964,13 @@ export class Game {
             this.world.strings.setState(snapshot.strings);
         }
 
-        // Restore clientId interning - MERGE with existing mappings!
-        // CRITICAL: handleConnect may have already interned clientIds from join inputs
+        // Restore clientId interning - MERGE with existing mappings
+        // handleConnect may have already interned clientIds from join inputs
         // that occurred AFTER the snapshot was taken. We must preserve those.
         if (snapshot.clientIdMap) {
             const snapshotMappings = Object.entries(snapshot.clientIdMap.toNum) as [string, number][];
 
             // Track ALL clientIds from snapshot (including those who joined then left)
-            // This is used to detect "stale" JOINs during catchup
             this.clientIdsFromSnapshotMap.clear();
             for (const [clientId] of snapshotMappings) {
                 this.clientIdsFromSnapshotMap.add(clientId);
@@ -2926,6 +2955,6 @@ export class GameEntityBuilder {
  * Initialize a new game instance.
  */
 export function createGame(): Game {
-    console.log('[MODU] Engine version: BUILD_50');
+    console.log(`[MODU] Engine version: ${ENGINE_VERSION}`);
     return new Game();
 }
