@@ -718,7 +718,9 @@ var CellEater = (() => {
       sizeDisplay,
       getLocalClientId
     );
-    game.connect("cell-eater-ecs", {
+    const urlParams = new URLSearchParams(window.location.search);
+    const roomId = urlParams.get("room") || "cell-eater-ecs";
+    game.connect(roomId, {
       onRoomCreate() {
         console.log("[cell-eater] onRoomCreate");
         for (let i = 0; i < FOOD_COUNT; i++)
