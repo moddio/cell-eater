@@ -195,6 +195,9 @@ export function initGame(): void {
     });
 
     modu.enableDebugUI(game);
+
+    // Enable client-side prediction with rollback
+    game.enablePrediction();
 }
 
 // Auto-init when DOM is ready

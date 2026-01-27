@@ -182,11 +182,6 @@ export function setupSystems(game: modu.Game): void {
         for (const [clientId, cells] of sortedPlayers) {
             const playerInput = game.world.getInput(clientId);
 
-            // Debug: log every 60 frames
-            if (game.world.frame % 60 === 0 && cells.length > 0) {
-                console.log(`[MOVE] clientId=${clientId}, cells=${cells.length}, hasInput=${!!playerInput}, hasTarget=${!!playerInput?.target}`);
-            }
-
             for (const cell of cells) {
                 const sprite = cell.get(modu.Sprite);
                 const transform = cell.get(modu.Transform2D);
