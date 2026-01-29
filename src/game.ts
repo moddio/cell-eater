@@ -413,9 +413,15 @@ export class Game {
             this.predictionManager.enable();
         }
 
+        // Share the Game's client ID resolver so prediction uses the same numbering
+        this.predictionManager.setClientIdResolver((clientId: string) => this.internClientId(clientId));
+
         // Set local client ID if already known
         if (this.localClientIdStr) {
-            this.predictionManager.setLocalClientId(this.localClientIdStr);
+            const numId = this.clientIdToNum.get(this.localClientIdStr);
+            if (numId !== undefined) {
+                this.predictionManager.setLocalClientId(numId);
+            }
         }
 
         // Set tick interval
@@ -425,7 +431,7 @@ export class Game {
         for (const clientId of this.activeClients) {
             const numId = this.clientIdToNum.get(clientId);
             if (numId !== undefined) {
-                this.predictionManager.addClient(clientId);
+                this.predictionManager.addClient(numId);
             }
         }
 
@@ -1392,7 +1398,8 @@ export class Game {
 
         // Initialize prediction manager if enabled
         if (this.predictionManager) {
-            this.predictionManager.setLocalClientId(clientId);
+            const localNumId = this.internClientId(clientId);
+            this.predictionManager.setLocalClientId(localNumId);
             this.predictionManager.setTickInterval(this.tickIntervalMs);
             this.predictionManager.initialize(frame);
             console.log(`[CSP] Prediction initialized at frame ${frame}`);
@@ -1865,7 +1872,10 @@ export class Game {
 
                 // Add to prediction tracking if CSP is enabled
                 if (this.predictionManager?.enabled) {
-                    this.predictionManager.addClient(clientId);
+                    const numId = this.clientIdToNum.get(clientId);
+                    if (numId !== undefined) {
+                        this.predictionManager.addClient(numId);
+                    }
                 }
 
                 // Mark snapshot needed
@@ -1898,7 +1908,10 @@ export class Game {
 
                 // Remove from prediction tracking if CSP is enabled
                 if (this.predictionManager?.enabled) {
-                    this.predictionManager.removeClient(clientId);
+                    const numId = this.clientIdToNum.get(clientId);
+                    if (numId !== undefined) {
+                        this.predictionManager.removeClient(numId);
+                    }
                 }
 
                 // CRITICAL FIX: Upload snapshot after disconnect so late joiners get updated state.

@@ -55,11 +55,8 @@ export class PredictionManager {
     /** Local client ID (numeric) */
     private localClientId: number = 0;
 
-    /** Map from string clientId to numeric ID */
-    private clientIdMap: Map<string, number> = new Map();
-
-    /** Next numeric client ID */
-    private nextClientNum: number = 1;
+    /** Resolver function to convert string clientId to numeric ID (provided by Game) */
+    private resolveClientId: ((clientId: string) => number) | null = null;
 
     /** Prediction statistics */
     private stats: PredictionStats = {
@@ -152,11 +149,19 @@ export class PredictionManager {
     }
 
     /**
-     * Set local client ID.
+     * Set the function used to resolve string client IDs to numeric IDs.
+     * This MUST use the same mapping as the Game/World to avoid ID mismatches.
      */
-    setLocalClientId(clientId: string): void {
-        this.localClientId = this.internClientId(clientId);
-        this.inputHistory.setLocalClientId(this.localClientId);
+    setClientIdResolver(resolver: (clientId: string) => number): void {
+        this.resolveClientId = resolver;
+    }
+
+    /**
+     * Set local client ID (numeric, from Game's mapping).
+     */
+    setLocalClientId(numericId: number): void {
+        this.localClientId = numericId;
+        this.inputHistory.setLocalClientId(numericId);
     }
 
     /**
@@ -190,33 +195,27 @@ export class PredictionManager {
     }
 
     /**
-     * Intern a client ID string to a numeric ID.
+     * Resolve a string client ID to numeric using the Game's mapping.
      */
-    private internClientId(clientId: string): number {
-        let num = this.clientIdMap.get(clientId);
-        if (num === undefined) {
-            num = this.nextClientNum++;
-            this.clientIdMap.set(clientId, num);
+    private resolveId(clientId: string): number {
+        if (!this.resolveClientId) {
+            throw new Error('[CSP] No client ID resolver set');
         }
-        return num;
+        return this.resolveClientId(clientId);
     }
 
     /**
-     * Add a client to track for prediction.
+     * Add a client to track for prediction (numeric ID from Game's mapping).
      */
-    addClient(clientId: string): void {
-        const numId = this.internClientId(clientId);
-        this.inputHistory.addClient(numId);
+    addClient(numericId: number): void {
+        this.inputHistory.addClient(numericId);
     }
 
     /**
-     * Remove a client from prediction tracking.
+     * Remove a client from prediction tracking (numeric ID from Game's mapping).
      */
-    removeClient(clientId: string): void {
-        const numId = this.clientIdMap.get(clientId);
-        if (numId !== undefined) {
-            this.inputHistory.removeClient(numId);
-        }
+    removeClient(numericId: number): void {
+        this.inputHistory.removeClient(numericId);
     }
 
     /**
@@ -307,7 +306,7 @@ export class PredictionManager {
                 continue;
             }
 
-            const clientNum = this.internClientId(input.clientId);
+            const clientNum = this.resolveId(input.clientId);
 
             // Confirm input - returns true if prediction was wrong
             if (this.inputHistory.confirmInput(frame, clientNum, input.data)) {
