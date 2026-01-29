@@ -435,6 +435,16 @@ export class Game {
             }
         }
 
+        // Wire lifecycle event callbacks so join/leave/disconnect/reconnect
+        // participate in rollback — without this, lifecycle events at past frames
+        // cause desync because predicted frames miss entity spawns/despawns.
+        this.predictionManager.onLifecycleEvent = (input) => {
+            this.processInput(input);
+        };
+        this.predictionManager.onUndoLifecycleEvent = (input) => {
+            this.undoLifecycleEvent(input);
+        };
+
         console.log('[CSP] Client-side prediction enabled');
     }
 
@@ -1635,16 +1645,11 @@ export class Game {
                 frame: i.frame
             }));
 
-            // Let prediction manager handle the tick (may trigger rollback)
+            // Let prediction manager handle the tick (may trigger rollback).
+            // Lifecycle events (join/leave/disconnect/reconnect) are now handled
+            // inside the prediction pipeline via onLifecycleEvent/onUndoLifecycleEvent
+            // callbacks, ensuring they participate in rollback correctly.
             this.predictionManager.receiveServerTick(frame, predInputs);
-
-            // Still process lifecycle events (join, leave, etc.) directly
-            for (const input of inputs) {
-                const inputType = input.data?.type;
-                if (inputType === 'join' || inputType === 'leave' || inputType === 'disconnect' || inputType === 'reconnect') {
-                    this.processInput(input);
-                }
-            }
 
             // Update confirmed frame tracking
             this.currentFrame = frame;
@@ -1925,6 +1930,51 @@ export class Game {
             // Game input - store in world's input registry
             this.routeInputToEntity(clientId, data);
         }
+    }
+
+    /**
+     * Undo the game-state effects of a lifecycle event (for rollback).
+     * Reverses activeClients/authorityClientId changes so that processInput's
+     * idempotency guards don't block replay during resimulation.
+     * Entity state is handled by snapshot restore — this only undoes Game bookkeeping.
+     */
+    private undoLifecycleEvent(input: any): void {
+        const data = input.data instanceof Uint8Array ? input.data : input.data;
+        const clientId = data?.clientId || input.clientId;
+        const type = data?.type;
+
+        if (type === 'join') {
+            // Undo join: remove from activeClients
+            const idx = this.activeClients.indexOf(clientId);
+            if (idx !== -1) {
+                this.activeClients.splice(idx, 1);
+            }
+            if (this.authorityClientId === clientId) {
+                this.authorityClientId = this.activeClients[0] || null;
+            }
+            if (this.predictionManager?.enabled) {
+                const numId = this.clientIdToNum.get(clientId);
+                if (numId !== undefined) {
+                    this.predictionManager.removeClient(numId);
+                }
+            }
+        } else if (type === 'leave' || type === 'disconnect') {
+            // Undo leave/disconnect: add back to activeClients
+            if (!this.activeClients.includes(clientId)) {
+                this.activeClients.push(clientId);
+                this.activeClients.sort();
+            }
+            if (this.authorityClientId === null) {
+                this.authorityClientId = this.activeClients[0] || null;
+            }
+            if (this.predictionManager?.enabled) {
+                const numId = this.clientIdToNum.get(clientId);
+                if (numId !== undefined) {
+                    this.predictionManager.addClient(numId);
+                }
+            }
+        }
+        // reconnect is treated as a no-op for undo (no game-state change)
     }
 
     /**

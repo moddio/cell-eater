@@ -82,6 +82,15 @@ export class PredictionManager {
     /** Callback when rollback occurs */
     public onRollback: ((fromFrame: number, toFrame: number) => void) | null = null;
 
+    /** Lifecycle events stored per frame for replay during rollback */
+    private lifecycleEvents: Map<number, ServerInput[]> = new Map();
+
+    /** Callback for processing lifecycle events (join/leave/disconnect/reconnect) */
+    public onLifecycleEvent: ((input: ServerInput) => void) | null = null;
+
+    /** Callback for undoing lifecycle events before rollback (reverses game state so replay is fresh) */
+    public onUndoLifecycleEvent: ((input: ServerInput) => void) | null = null;
+
     constructor(
         world: World,
         config: Partial<PredictionConfig> = {}
@@ -185,6 +194,7 @@ export class PredictionManager {
 
         // Reset state
         this.inputHistory.reset();
+        this.lifecycleEvents.clear();
         this.stats = {
             rollbackCount: 0,
             framesResimulated: 0,
@@ -297,12 +307,19 @@ export class PredictionManager {
         if (!this._enabled) return false;
 
         let needsRollback = false;
+        const lifecycleInputs: ServerInput[] = [];
 
         // Process each input from server
         for (const input of serverInputs) {
-            // Skip non-game inputs (join, leave, etc.)
-            if (input.data?.type === 'join' || input.data?.type === 'leave' ||
-                input.data?.type === 'disconnect' || input.data?.type === 'reconnect') {
+            const type = input.data?.type;
+            if (type === 'join' || type === 'leave' ||
+                type === 'disconnect' || type === 'reconnect') {
+                // Lifecycle events are never predicted — if we've already simulated
+                // past this frame, we must rollback to include them deterministically.
+                lifecycleInputs.push(input);
+                if (frame <= this._localFrame) {
+                    needsRollback = true;
+                }
                 continue;
             }
 
@@ -312,6 +329,12 @@ export class PredictionManager {
             if (this.inputHistory.confirmInput(frame, clientNum, input.data)) {
                 needsRollback = true;
             }
+        }
+
+        // Store lifecycle events for replay during rollback resimulation
+        if (lifecycleInputs.length > 0) {
+            const existing = this.lifecycleEvents.get(frame) || [];
+            this.lifecycleEvents.set(frame, [...existing, ...lifecycleInputs]);
         }
 
         // Mark frame as confirmed
@@ -324,6 +347,14 @@ export class PredictionManager {
         if (needsRollback && frame <= this._localFrame) {
             this.executeRollback(frame);
             return true;
+        }
+
+        // No rollback needed — process lifecycle events immediately
+        // (frame is ahead of or equal to localFrame with no misprediction)
+        if (lifecycleInputs.length > 0 && this.onLifecycleEvent) {
+            for (const event of lifecycleInputs) {
+                this.onLifecycleEvent(event);
+            }
         }
 
         return false;
@@ -356,12 +387,35 @@ export class PredictionManager {
             this.onRollback(this._localFrame, toFrame);
         }
 
+        // Undo lifecycle events in the rollback range so game state (activeClients etc.)
+        // is rewound. This ensures idempotency guards in processInput don't block replay.
+        // Undo in reverse frame order, reverse event order within each frame.
+        if (this.onUndoLifecycleEvent) {
+            for (let f = this._localFrame; f >= toFrame; f--) {
+                const events = this.lifecycleEvents.get(f);
+                if (events) {
+                    for (let i = events.length - 1; i >= 0; i--) {
+                        this.onUndoLifecycleEvent(events[i]);
+                    }
+                }
+            }
+        }
+
         // Load state from before misprediction
         this.world.loadSparseSnapshot(snapshot);
 
         // Resimulate from toFrame to localFrame with corrected inputs
         const targetFrame = this._localFrame;
         for (let f = toFrame; f <= targetFrame; f++) {
+            // Replay lifecycle events for this frame BEFORE tick
+            // (join/leave affect which entities exist for the simulation)
+            const events = this.lifecycleEvents.get(f);
+            if (events && this.onLifecycleEvent) {
+                for (const event of events) {
+                    this.onLifecycleEvent(event);
+                }
+            }
+
             // Collect corrected inputs (now confirmed where available)
             const inputs = this.collectFrameInputs(f);
 
@@ -436,6 +490,7 @@ export class PredictionManager {
         this._confirmedFrame = 0;
         this.inputHistory.reset();
         this.timeSyncManager.reset();
+        this.lifecycleEvents.clear();
         this.stats = {
             rollbackCount: 0,
             framesResimulated: 0,

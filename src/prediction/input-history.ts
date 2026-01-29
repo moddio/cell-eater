@@ -47,6 +47,12 @@ export class InputHistory {
     /** Local client ID */
     private localClientId: number = 0;
 
+    /** Whether setLocalClientId has been called */
+    private _hasLocalClient: boolean = false;
+
+    /** Minimum frame boundary — clearOldFrames prevents oldestFrame from regressing below this */
+    private _clearedBefore: number = 0;
+
     constructor(bufferSize: number = DEFAULT_HISTORY_SIZE) {
         this.bufferSize = bufferSize;
         this.buffer = new Array(bufferSize).fill(null);
@@ -57,6 +63,7 @@ export class InputHistory {
      */
     setLocalClientId(clientId: number): void {
         this.localClientId = clientId;
+        this._hasLocalClient = true;
         this.activeClients.add(clientId);
     }
 
@@ -103,7 +110,10 @@ export class InputHistory {
         if (frame > this.newestFrame) {
             this.newestFrame = frame;
         }
-        if (this.oldestFrame === 0 || frame < this.oldestFrame) {
+        if (this.newestFrame === frame && this.oldestFrame === 0 && !this._clearedBefore) {
+            // First frame ever stored
+            this.oldestFrame = frame;
+        } else if (frame < this.oldestFrame && frame >= this._clearedBefore) {
             this.oldestFrame = frame;
         }
 
@@ -338,6 +348,7 @@ export class InputHistory {
             }
         }
         this.oldestFrame = beforeFrame;
+        this._clearedBefore = beforeFrame;
     }
 
     /**
@@ -386,9 +397,10 @@ export class InputHistory {
         this.buffer = new Array(this.bufferSize).fill(null);
         this.oldestFrame = 0;
         this.newestFrame = -1;
+        this._clearedBefore = 0;
         this.lastKnownInputs.clear();
         this.activeClients.clear();
-        if (this.localClientId) {
+        if (this._hasLocalClient) {
             this.activeClients.add(this.localClientId);
         }
     }
