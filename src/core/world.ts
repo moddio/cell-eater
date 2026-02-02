@@ -938,8 +938,9 @@ export class World {
      * Clear world for snapshot restore (doesn't reset allocator).
      */
     private clearForSnapshot(): void {
-        // Release all entities
         for (const eid of this.activeEntities) {
+            if (eid & LOCAL_ENTITY_BIT) continue;
+
             const components = this.entityComponents.get(eid) || [];
             const index = eid & INDEX_MASK;
 
@@ -950,14 +951,29 @@ export class World {
             this.entityPool.release(eid);
         }
 
-        // Clear tracking
-        this.activeEntities.clear();
-        this.entityTypes.clear();
-        this.entityComponents.clear();
-        this.entityClientIds.clear();
+        for (const eid of this.activeEntities) {
+            if (!(eid & LOCAL_ENTITY_BIT)) this.activeEntities.delete(eid);
+        }
+        for (const eid of this.entityTypes.keys()) {
+            if (!(eid & LOCAL_ENTITY_BIT)) this.entityTypes.delete(eid);
+        }
+        for (const eid of this.entityComponents.keys()) {
+            if (!(eid & LOCAL_ENTITY_BIT)) this.entityComponents.delete(eid);
+        }
+        for (const eid of this.entityClientIds.keys()) {
+            if (!(eid & LOCAL_ENTITY_BIT)) this.entityClientIds.delete(eid);
+        }
 
-        // Clear query indices
+        // Clear query indices and re-index surviving local entities
         this.queryEngine.clear();
+        for (const eid of this.activeEntities) {
+            const typeName = this.entityTypes.get(eid);
+            const components = this.entityComponents.get(eid) || [];
+            const clientId = this.entityClientIds.get(eid);
+            if (typeName) {
+                this.queryEngine.addEntity(eid, typeName, components, clientId);
+            }
+        }
     }
 
     /**

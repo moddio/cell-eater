@@ -17,6 +17,7 @@ export interface PredictionConfig {
     maxRollbackFrames: number;
     /** Whether prediction is enabled */
     enabled: boolean;
+    inputPredictionStrategy: 'idle' | 'repeat-last';
 }
 
 /**
@@ -26,7 +27,8 @@ export const DEFAULT_PREDICTION_CONFIG: PredictionConfig = {
     inputDelayFrames: 2,
     maxPredictionFrames: 8,
     maxRollbackFrames: 10,
-    enabled: true
+    enabled: true,
+    inputPredictionStrategy: 'idle'
 };
 
 /**

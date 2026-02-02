@@ -91,6 +91,9 @@ export class PredictionManager {
     /** Callback for undoing lifecycle events before rollback (reverses game state so replay is fresh) */
     public onUndoLifecycleEvent: ((input: ServerInput) => void) | null = null;
 
+    /** Callback fired after each frame is resimulated during rollback (for hash invalidation) */
+    public onFrameResimulated: ((frame: number) => void) | null = null;
+
     constructor(
         world: World,
         config: Partial<PredictionConfig> = {}
@@ -99,6 +102,7 @@ export class PredictionManager {
         this.config = { ...DEFAULT_PREDICTION_CONFIG, ...config };
         this.timeSyncManager = new TimeSyncManager();
         this.inputHistory = new InputHistory(this.config.maxRollbackFrames + 20);
+        this.inputHistory.setPredictionStrategy(this.config.inputPredictionStrategy);
         this.rollbackBuffer = new RollbackBuffer(this.config.maxRollbackFrames + 10);
     }
 
@@ -109,6 +113,7 @@ export class PredictionManager {
         if (config) {
             this.config = { ...this.config, ...config };
         }
+        this.inputHistory.setPredictionStrategy(this.config.inputPredictionStrategy);
         this._enabled = true;
         this.config.enabled = true;
     }
@@ -333,8 +338,8 @@ export class PredictionManager {
 
             const clientNum = this.resolveId(input.clientId);
 
-            // Confirm input - returns true if prediction was wrong
-            if (this.inputHistory.confirmInput(frame, clientNum, input.data)) {
+            const inputFrame = input.frame ?? frame;
+            if (this.inputHistory.confirmInput(inputFrame, clientNum, input.data)) {
                 needsRollback = true;
             }
         }
@@ -438,6 +443,8 @@ export class PredictionManager {
 
             // Save corrected snapshot
             this.rollbackBuffer.save(f, this.world.getSparseSnapshot());
+
+            this.onFrameResimulated?.(f);
         }
     }
 

@@ -444,6 +444,10 @@ export class Game {
         this.predictionManager.onUndoLifecycleEvent = (input) => {
             this.undoLifecycleEvent(input);
         };
+        this.predictionManager.onFrameResimulated = (frame: number) => {
+            const hash = this.world.getStateHash();
+            this.stateHashHistory.set(frame, hash);
+        };
 
         console.log('[CSP] Client-side prediction enabled');
     }
@@ -1763,6 +1767,27 @@ export class Game {
     }
 
     /**
+     * Send only the state hash for a predicted frame (no partition deltas —
+     * predicted state may change on rollback making deltas wrong).
+     */
+    private sendStateHash(frame: number): void {
+        if (!this.stateSyncEnabled || !this.connection?.sendStateHash) return;
+
+        const stateHash = this.world.getStateHash();
+        this.connection.sendStateHash(frame, stateHash);
+
+        this.stateHashHistory.set(frame, stateHash);
+        if (this.stateHashHistory.size > this.HASH_HISTORY_SIZE) {
+            const oldestFrame = frame - this.HASH_HISTORY_SIZE;
+            for (const f of this.stateHashHistory.keys()) {
+                if (f <= oldestFrame) {
+                    this.stateHashHistory.delete(f);
+                }
+            }
+        }
+    }
+
+    /**
      * Send state synchronization data after tick.
      * Sends stateHash to server, and partition data if this client is assigned.
      */
@@ -2822,6 +2847,7 @@ export class Game {
                 // Run prediction ticks (may run multiple if we're behind)
                 while (tickAccumulator >= adjustedInterval) {
                     this.predictionManager.advanceFrame();
+                    this.sendStateHash(this.predictionManager.localFrame);
 
                     // Call game's onTick callback with predicted frame
                     this.callbacks.onTick?.(this.predictionManager.localFrame);

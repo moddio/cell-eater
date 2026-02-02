@@ -50,6 +50,8 @@ export class InputHistory {
     /** Whether setLocalClientId has been called */
     private _hasLocalClient: boolean = false;
 
+    private predictionStrategy: 'idle' | 'repeat-last' = 'idle';
+
     /** Minimum frame boundary — clearOldFrames prevents oldestFrame from regressing below this */
     private _clearedBefore: number = 0;
 
@@ -80,6 +82,10 @@ export class InputHistory {
     removeClient(clientId: number): void {
         this.activeClients.delete(clientId);
         this.lastKnownInputs.delete(clientId);
+    }
+
+    setPredictionStrategy(strategy: 'idle' | 'repeat-last'): void {
+        this.predictionStrategy = strategy;
     }
 
     /**
@@ -245,13 +251,13 @@ export class InputHistory {
             }
         }
 
-        // Use repeat-last strategy: return last known input for this client
-        const lastKnown = this.lastKnownInputs.get(clientId);
-        if (lastKnown) {
-            return lastKnown;
+        if (this.predictionStrategy === 'repeat-last') {
+            const lastKnown = this.lastKnownInputs.get(clientId);
+            if (lastKnown) {
+                return lastKnown;
+            }
         }
 
-        // No history - return empty input
         return {};
     }
 
