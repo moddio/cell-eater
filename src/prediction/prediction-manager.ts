@@ -338,7 +338,8 @@ export class PredictionManager {
 
             const clientNum = this.resolveId(input.clientId);
 
-            if (this.inputHistory.confirmInput(frame, clientNum, input.data)) {
+            const inputFrame = input.frame ?? frame;
+            if (this.inputHistory.confirmInput(inputFrame, clientNum, input.data)) {
                 needsRollback = true;
             }
         }
