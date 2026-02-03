@@ -194,20 +194,23 @@ export class InputHistory {
         const frameSet = this.getOrCreateFrameSet(frame);
         const existing = frameSet.inputs.get(clientId);
 
+        // Normalize null/undefined to empty object
+        const normalizedData = data ?? {};
+
         // Update last known input for this client
-        this.lastKnownInputs.set(clientId, data);
+        this.lastKnownInputs.set(clientId, normalizedData);
 
         // Store confirmed input
         frameSet.inputs.set(clientId, {
             clientId,
-            data,
+            data: normalizedData,
             confirmed: true
         });
 
         // Check for misprediction
         if (existing && !existing.confirmed) {
             // Had a prediction - compare with confirmed data
-            return !this.inputsEqual(existing.data, data);
+            return !this.inputsEqual(existing.data, normalizedData);
         }
 
         // No prediction existed - not a misprediction (though this is unusual)
@@ -218,6 +221,8 @@ export class InputHistory {
      * Compare two input data objects for equality.
      */
     private inputsEqual(a: Record<string, any>, b: Record<string, any>): boolean {
+        if (!a && !b) return true;
+        if (!a || !b) return false;
         const keysA = Object.keys(a);
         const keysB = Object.keys(b);
 
